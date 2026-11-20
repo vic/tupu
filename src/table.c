@@ -60,6 +60,12 @@ static uint64_t hash_vals_all(const Table *t, const I128 *vals) {
   return acc;
 }
 
+static uint64_t hash_row_all(const Table *t, uint32_t row) {
+  uint64_t acc = 0;
+  for (int c = 0; c < t->ncols; c++) acc = fold_cell(acc, t->kind[c], tcell(t, c, row));
+  return acc;
+}
+
 static bool row_equals(const Table *t, uint32_t row, const I128 *vals) {
   for (int c = 0; c < t->ncols; c++)
     if (tcell(t, c, row) != vals[c]) return false;
@@ -70,11 +76,13 @@ static Status dedup_grow(Table *t, Err *e) {
   size_t ncap = t->dcap == 0 ? 1024 : t->dcap * 2;
   DSlot *ns = calloc(ncap, sizeof *ns);
   if (ns == NULL) return err_oom(e);
-  for (size_t k = 0; k < t->dcap; k++) { /* the stored hashes: no row is hashed again */
-    if (!t->dsl[k].used) continue;
-    size_t i = t->dsl[k].hash & (ncap - 1);
+  for (uint32_t r = 0; r < t->count; r++) { /* growth only: each row is hashed again from its columns */
+    uint64_t h = hash_row_all(t, r);
+    size_t i = h & (ncap - 1);
     while (ns[i].used) i = (i + 1) & (ncap - 1);
-    ns[i] = t->dsl[k];
+    ns[i].used = 1;
+    ns[i].tag = hash_tag(h);
+    ns[i].row = r;
   }
   free(t->dsl);
   t->dsl = ns;
@@ -127,7 +135,7 @@ bool table_contains_h(const Table *t, uint64_t h, const I128 *vals) {
   if (t->dcap == 0) return false;
   size_t i = h & (t->dcap - 1);
   while (t->dsl[i].used) {
-    if (t->dsl[i].hash == h && row_equals(t, t->dsl[i].row, vals)) return true; /* equal hashes: read the columns; never trust a hash alone */
+    if (t->dsl[i].tag == hash_tag(h) && row_equals(t, t->dsl[i].row, vals)) return true; /* equal hashes: read the columns; never trust a hash alone */
     i = (i + 1) & (t->dcap - 1);
   }
   return false;
@@ -137,7 +145,7 @@ bool table_contains(const Table *t, const I128 *vals) {
   if (t->dcap == 0) return false;
   size_t i = hash_vals_all(t, vals) & (t->dcap - 1);
   while (t->dsl[i].used) {
-    if (t->dsl[i].hash == hash_vals_all(t, vals) && row_equals(t, t->dsl[i].row, vals)) return true;
+    if (t->dsl[i].tag == hash_tag(hash_vals_all(t, vals)) && row_equals(t, t->dsl[i].row, vals)) return true;
     i = (i + 1) & (t->dcap - 1);
   }
   return false;
@@ -151,7 +159,7 @@ Status table_add(Table *t, uint64_t h, const I128 *vals, Origin org, uint32_t re
   }
   size_t i = h & (t->dcap - 1);
   while (t->dsl[i].used) {
-    if (t->dsl[i].hash == h && row_equals(t, t->dsl[i].row, vals)) return STATUS_OK;
+    if (t->dsl[i].tag == hash_tag(h) && row_equals(t, t->dsl[i].row, vals)) return STATUS_OK;
     i = (i + 1) & (t->dcap - 1);
   }
 #ifdef MUTANT_DEDUPREL
@@ -180,7 +188,7 @@ Status table_add(Table *t, uint64_t h, const I128 *vals, Origin org, uint32_t re
   t->org_ref[row] = ref;
   t->round[row] = round;
   t->dsl[i].used = 1;
-  t->dsl[i].hash = h;
+  t->dsl[i].tag = hash_tag(h);
   t->dsl[i].row = row;
   t->count++;
   *added = true;

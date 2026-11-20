@@ -29,10 +29,12 @@ typedef struct {
 } Index;
 
 typedef struct {
-  uint64_t hash;
+  uint32_t used : 1; /* S104: the first word is a used bit and the top 31 bits of the F3 hash; the second the row id */
+  uint32_t tag : 31;
   uint32_t row;
-  uint32_t used;
 } DSlot;
+
+static inline uint32_t hash_tag(uint64_t h) { return (uint32_t)(h >> 33); }
 
 typedef struct {
   int ncols;
@@ -42,7 +44,7 @@ typedef struct {
   uint8_t *org_kind;
   uint32_t *org_ref; /* rule index, program fact index, or 0 for input rows */
   uint32_t *round;
-  DSlot *dsl; /* S103: dedup slots, 16 bytes: the full F3 hash, the row id, used flag */
+  DSlot *dsl; /* S104: dedup slots, 8 bytes */
   size_t dcap;
   Index **idx;
   int nidx, idxcap;
