@@ -1,0 +1,7 @@
+.decl q(x: symbol)
+.input q
+.decl p(x: symbol)
+.decl r(x: symbol)
+.output p(IO=stdout)
+p(x) :- q(x), !r(x).
+r(x) :- p(x).
