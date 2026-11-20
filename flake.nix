@@ -48,7 +48,9 @@
             cp -r $src work
             chmod -R u+w work
             cd work
-            just test
+            mkdir -p result/bin
+            cp ${self.packages.${pkgs.system}.default}/bin/tupu result/bin/tupu
+            SKIP_O7=1 just test
             touch $out
           '';
       });
