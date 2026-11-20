@@ -1,0 +1,36 @@
+# The known gaps of the earlier s3 checker (ruling S40): every program below was rejected by the old s2c and accepted by
+# the old s3c. Each row of corpus.tsv is a golden case carrying its old name and its stigi code, or a written line that
+# says why it cannot be written in L0. A case is the smallest fact set whose obligation the rules must refuse; its
+# subject is named like the case. Expected rows are in expected.txt; the table is the expected oracle.
+gold() {
+  name=$1; code=$2; old=$3
+  mk "$name"; f scope R
+  case "$code" in
+    unhandled-effect) f needsCapability "$name File" ;;
+    assign-val) f assignTo "$name v" ;;
+    index-unproved) f value i n; f indexRead "$name i n R" ;;
+    region-escape) f heap r1 r2; [ "$old" = put-data ] && f handleNest 'r1 r2'; f entry p1; f alloc "$name r1 p1" "c r2 p2"; f next 'p1 p2' 'p2 p3' 'p3 p4'; f move "p3 $name c"; f use 'p4 c'; f exit p4 ;;
+    alias-across-write) f heap r; f entry p1; f alloc 'c r p1' 'v r p2'; f next 'p1 p2' 'p2 p3' 'p3 p4' 'p4 p5'; f move 'p3 v c'; f overwrite 'p4 c'; f alias "$name v"; f binderRead "$name p5"; f use 'p5 c'; f exit p5 ;;
+    capability-value) f capabilityValueUse "$name v Argument" ;;
+    op-not-allowed) f capabilityOf 'c File'; f startState 'File Open'; f stopState 'File Closed'; f stateOf 'File Open' 'File Closed'; f entryState 'close Open'; f exitState 'close Closed'; f entry p1; f next 'p1 p2' 'p2 p3'; f handleRange 'c p1 p3'; f operationCall 'o0 c close p1' "$name c close p2" ;;
+    capability-not-ended) f capabilityOf "$name File"; f startState 'File Open'; f stopState 'File Closed'; f stateOf 'File Open' 'File Closed'; f entryState 'read Open'; f exitState 'read Open'; f entry p1; f next 'p1 p2'; f handleRange "$name p1 p2"; f operationCall "o1 $name read p1" ;;
+    mismatch) f expects "$name T1"; f typeOf "$name T2" ;;
+    arity) f arityUse "$name Value 2 3" ;;
+    nested-pattern) f patternDepth "$name 2" ;;
+    handler-signature) f handlerImpl "$name op"; f sigOf "$name S1" 'op S2' ;;
+    duplicate) f unitName "$name n" "${name}x n" ;;
+    unresolved-name) f reference "$name u1" ;;
+    reserved-name|extern-denied) f kernelOnly "$name $code"; f imageMode User ;;
+    extern-outside-handler) f externRef "$name"; f reference "$name u1"; f resolves "$name e1"; f visibleFrom 'e1 u1' ;;
+    literal-out-of-range) f value "$name"; f lit "$name 300"; f valueType "$name U8"; f typeRange 'U8 0 255' ;;
+    precondition-unproved) f scope A; f parent 'A R'; f value i n; f belowOwed "$name i n A precondition-unproved" ;;
+  esac
+}
+TAB=$(printf '\t')
+while IFS="$TAB" read -r name old code file reason; do
+  [ "$code" = "-" ] && continue
+  gold "$name" "$code" "$old"
+  relrows corpus "$name" "" "$file" reject
+done < corpus.tsv
+mk allProgram
+relrows corpus allProgram "" all reject

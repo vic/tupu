@@ -1,0 +1,94 @@
+// Capability states and rows (vic/spec/rules.md 6, capabilities.md 4). Typestate over the control-flow graph.
+// Theory: typestate (Strom and Yemini 1986) checked as a reachability computation over the finite automaton of
+// the capability (capabilities.md 4); evidence for rows follows Leijen 2017. `stateBefore` is a may-fact: two states at
+// one point make `mixed`, and a clearing rule reads a state only where it is single. A clearing rule never rests on
+// the absence of a state: each one needs the state to exist (fail closed).
+// Mutants (cases/capabilities.cases): MUTANT_NOCARRY, MUTANT_NOFLOW, MUTANT_MIXEDOFF, MUTANT_BRANCHOFF, MUTANT_LOOPOFF,
+// MUTANT_ENDANY, MUTANT_ANYPROVIDER, MUTANT_STATEREFOFF, MUTANT_CAPVALUEOFF, MUTANT_HANDLEOFF, MUTANT_DENYATOFF.
+#ifndef STIGI_CAPABILITIES
+#define STIGI_CAPABILITIES
+#include "flow.dl"
+#include "contracts.dl"
+
+.decl stateBefore(c: Value, p: Point, s: State)
+.decl stateAfter(c: Value, p: Point, s: State)
+.decl changes(c: Value, p: Point)
+.decl mixed(c: Value, p: Point)
+stateBefore(c, p, s) :- handleRange(c, p, _), capabilityOf(c, k), startState(k, s).
+changes(c, p) :- operationCall(_, c, op, p), exitState(op, _).
+stateAfter(c, p, s) :- operationCall(_, c, op, p), exitState(op, s).
+#ifndef MUTANT_NOCARRY
+stateAfter(c, p, s) :- stateBefore(c, p, s), !changes(c, p).
+#endif
+#ifndef MUTANT_NOFLOW
+stateBefore(c, q, s) :- next(p, q), stateAfter(c, p, s), reachable(q).
+#endif
+mixed(c, p) :- stateBefore(c, p, s), stateBefore(c, p, t), s != t.
+
+// an operation is allowed when the single state at the call is its entry state
+#ifdef MUTANT_MIXEDOFF
+cleared(o, "op-not-allowed") :- operationCall(o, c, op, p), entryState(op, s), stateBefore(c, p, s).
+#else
+cleared(o, "op-not-allowed") :- operationCall(o, c, op, p), entryState(op, s), stateBefore(c, p, s), !mixed(c, p).
+#endif
+
+// branches and loops: every capability that has a state at the point has one state there
+.decl mixedAt(p: Point)
+mixedAt(p) :- mixed(_, p).
+#ifdef MUTANT_BRANCHOFF
+cleared(j, "branch-states") :- join(j).
+#else
+cleared(j, "branch-states") :- join(j), !mixedAt(j).
+#endif
+#ifdef MUTANT_LOOPOFF
+cleared(h, "loop-state") :- loopHead(h).
+#else
+cleared(h, "loop-state") :- loopHead(h), !mixedAt(h).
+#endif
+
+// the end of a handle scope: on every path the state is a stop state
+#ifdef MUTANT_ENDANY
+cleared(c, "capability-not-ended") :- handleRange(c, _, p), stateAfter(c, p, s), capabilityOf(c, k), stopState(k, s).
+#else
+.decl endBad(c: Value, p: Point)
+.decl endOk(c: Value, p: Point)
+.decl endMissing(c: Value)
+endBad(c, p) :- handleRange(c, _, p), stateAfter(c, p, s), capabilityOf(c, k), !stopState(k, s).
+endOk(c, p) :- handleRange(c, _, p), stateAfter(c, p, s), capabilityOf(c, k), stopState(k, s), !endBad(c, p).
+endMissing(c) :- handleRange(c, _, p), capabilityOf(c, _), !endOk(c, p).
+cleared(c, "capability-not-ended") :- handleRange(c, _, _), capabilityOf(c, _), !endMissing(c).
+#endif
+
+// a provider for every capability the operation needs
+#ifdef MUTANT_ANYPROVIDER
+cleared(o, "unhandled-effect") :- needsCapability(o, _), provider(o, _).
+#else
+.decl providedFor(o: Operation, k: Unit)
+.decl noProvider(o: Operation)
+providedFor(o, k) :- provider(o, c), capabilityOf(c, k).
+noProvider(o) :- needsCapability(o, k), !providedFor(o, k).
+cleared(o, "unhandled-effect") :- needsCapability(o, _), !noProvider(o).
+#endif
+
+// names and placement
+#ifdef MUTANT_STATEREFOFF
+cleared(a, "unknown-state") :- stateRef(a, _, _).
+#else
+cleared(a, "unknown-state") :- stateRef(a, k, s), stateOf(k, s).
+#endif
+#ifdef MUTANT_CAPVALUEOFF
+cleared(a, "capability-value") :- capabilityValueUse(a, _, _).
+#else
+cleared(a, "capability-value") :- capabilityValueUse(a, _, "Row").
+#endif
+#ifdef MUTANT_HANDLEOFF
+cleared(h, "handle-placement") :- handleSite(h, _).
+#else
+cleared(h, "handle-placement") :- handleSite(h, "Top").
+#endif
+
+// the denial atom at(c, S) holds at the points where c is in state S
+#ifndef MUTANT_DENYATOFF
+atomHolds(d, k, p) :- denyState(d, k, c, s), stateBefore(c, p, s).
+#endif
+#endif

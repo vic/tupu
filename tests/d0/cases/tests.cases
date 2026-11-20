@@ -1,0 +1,25 @@
+# Tests family cases (sourced by run.sh; vic/spec/rules.md 9, door.md 5). Expected rows are in expected.txt.
+tv() { verdict tests "$1" "${2:-}" tests; }
+ts() { mk "$1"; f unit 't Test'; f root t; f testGot 't v'; f testWant 't v'; }
+ts testOk
+mk testFail; f unit 't Test'; f root t; f testGot 't v'; f testWant 't w'
+ts testLeak; f testRow 't Stigi.Test' 't Stigi.Console'
+ts testRowOk; f testRow 't Stigi.Test'
+ts testDiffer; f emittedRun t; f emittedGot 't v2'
+ts testSame; f emittedRun t; f emittedGot 't v'
+ng() { mk "$1"; f unit 'n NegTest'; f root n; }
+ng negOk; f negExpect 'n index-unproved'; f negRejects 'n s1 index-unproved'; f clearsRule 'rule1 index-unproved'
+ng negNotRejected; f negExpect 'n index-unproved'; f clearsRule 'rule1 index-unproved'
+ng negEmpty
+ng negWrong; f negExpect 'n index-unproved'; f negRejects 'n s1 index-unproved' 'n s2 mismatch'; f clearsRule 'rule1 index-unproved'
+ng negForm; f negExpect 'n index-unproved'; f negRejects 'n s1 index-unproved' 'n s2 index-unproved'; f clearsRule 'rule1 index-unproved'
+ng negNoRule; f negExpect 'n index-unproved'; f negRejects 'n s1 index-unproved'
+for x in testOk testFail testLeak testRowOk testDiffer testSame negOk negNotRejected negEmpty negWrong negForm negNoRule; do tv $x; done
+tv testFail -MMUTANT_TESTOFF
+tv testLeak -MMUTANT_LEAKOFF
+tv testDiffer -MMUTANT_DIFFEROFF
+tv negNotRejected -MMUTANT_MISSINGOFF
+tv negWrong -MMUTANT_EXTRAOFF
+tv negForm -MMUTANT_MANYOFF
+tv negNoRule -MMUTANT_NORULEOFF
+tv negEmpty -MMUTANT_NOEXPECTOFF

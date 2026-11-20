@@ -1,0 +1,96 @@
+// Types family (vic/spec/rules.md 9, types.md): the type checker computes, Datalog judges ("datalog is our type checker").
+// Every rule is a direct join of a relation the type checker produced (T9); no rule reads syntax.
+// Theory: types that depend on values with linear index terms and decidable equality, Xi and Pfenning 1998 (types.md);
+// exhaustiveness of a match over a closed enum (each case once).
+// Mutants (cases/types.cases): MUTANT_MISMATCHOFF, MUTANT_INFEROFF, MUTANT_ARITYOFF, MUTANT_LINEAROFF, MUTANT_RECDIRECT,
+// MUTANT_FUELOFF, MUTANT_EXTERNEVALOFF, MUTANT_MISSINGCASEOFF, MUTANT_DUPCASEOFF, MUTANT_WILDOFF, MUTANT_NESTOFF,
+// MUTANT_ASSIGNOFF, MUTANT_SIGOFF, MUTANT_FORGEOFF.
+#ifndef STIGI_TYPES
+#define STIGI_TYPES
+#include "schema.dl"
+
+#ifdef MUTANT_MISMATCHOFF
+cleared(e, "mismatch") :- expects(e, _).
+#else
+cleared(e, "mismatch") :- typeOf(e, t), expects(e, t).
+#endif
+.decl ambiguous(e: Expression)
+#ifdef MUTANT_INFEROFF
+ambiguous(e) :- inferredType(e, _), 1 = 2.
+#else
+ambiguous(e) :- inferredType(e, t), inferredType(e, u), t != u.
+#endif
+cleared(e, "cannot-infer") :- needsInference(e), inferredType(e, _), !ambiguous(e).
+#ifdef MUTANT_ARITYOFF
+#define ARITYOK(a, k) arityUse(a, k, n, m), n <= m
+#else
+#define ARITYOK(a, k) arityUse(a, k, n, n)
+#endif
+cleared(a, "arity") :- ARITYOK(a, "Value").
+cleared(a, "type-arity") :- ARITYOK(a, "Type").
+cleared(a, "pattern-arity") :- ARITYOK(a, "Pattern").
+#ifdef MUTANT_LINEAROFF
+cleared(t, "length-not-linear") :- lengthTerm(t).
+#else
+cleared(t, "length-not-linear") :- lengthTerm(t), linearForm(t).
+#endif
+// a type cannot contain itself, directly or through other types, by inline fields
+.decl inlineReach(a: TypeName, b: TypeName)
+inlineReach(a, b) :- inlineField(a, b).
+#ifndef MUTANT_RECDIRECT
+inlineReach(a, c) :- inlineReach(a, b), inlineField(b, c).
+#endif
+cleared(ty, "recursive-type") :- typeDecl(ty), !inlineReach(ty, ty).
+// compile-time evaluation: inside its fuel, and without a body-less extern
+#ifdef MUTANT_FUELOFF
+cleared(e, "type-fuel") :- evaluation(e, "TypeArgument", _).
+cleared(e, "evaluation-fuel") :- evaluation(e, "Value", _).
+#else
+cleared(e, "type-fuel") :- evaluation(e, "TypeArgument", o), o != "OutOfFuel".
+cleared(e, "evaluation-fuel") :- evaluation(e, "Value", o), o != "OutOfFuel".
+#endif
+#ifdef MUTANT_EXTERNEVALOFF
+cleared(e, "not-compile-time") :- evaluation(e, _, _).
+#else
+cleared(e, "not-compile-time") :- evaluation(e, _, o), o != "ReachesExtern".
+#endif
+// match over an enum: each case once; a wildcard only over integers; patterns one level deep
+.decl missingCase(m: Atom)
+.decl dupCase(m: Atom)
+#ifdef MUTANT_MISSINGCASEOFF
+missingCase(m) :- enumCase(m, _), 1 = 2.
+#else
+missingCase(m) :- enumCase(m, k), !armCase(m, _, k).
+#endif
+#ifdef MUTANT_DUPCASEOFF
+dupCase(m) :- armCase(m, _, _), 1 = 2.
+#else
+dupCase(m) :- armCase(m, a, k), armCase(m, b, k), a != b.
+#endif
+cleared(m, "not-exhaustive") :- matchOver(m), !missingCase(m), !dupCase(m).
+#ifdef MUTANT_WILDOFF
+cleared(m, "wildcard-arm") :- wildcardArm(m, _).
+#else
+cleared(m, "wildcard-arm") :- wildcardArm(m, "Integer").
+#endif
+#ifdef MUTANT_NESTOFF
+cleared(a, "nested-pattern") :- patternDepth(a, _).
+#else
+cleared(a, "nested-pattern") :- patternDepth(a, d), d <= 1.
+#endif
+#ifdef MUTANT_ASSIGNOFF
+cleared(a, "assign-val") :- assignTo(a, _).
+#else
+cleared(a, "assign-val") :- assignTo(a, v), isVar(v).
+#endif
+#ifdef MUTANT_SIGOFF
+cleared(h, "handler-signature") :- handlerImpl(h, _).
+#else
+cleared(h, "handler-signature") :- handlerImpl(h, op), sigOf(h, s), sigOf(op, s).
+#endif
+#ifdef MUTANT_FORGEOFF
+cleared(d, "extern-forges-facts") :- externDecl(d).
+#else
+cleared(d, "extern-forges-facts") :- externDecl(d), !externCarriesFacts(d).
+#endif
+#endif

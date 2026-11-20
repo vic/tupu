@@ -1,0 +1,11 @@
+// The whole program: every family of D0 in one Souffle program (step 7). Souffle must accept it with no undeclared relation,
+// arity, type, unbound-variable or stratification error; cases/corpus.cases runs it on an empty fact set and expects no row.
+#include "arith.dl"
+#include "contracts.dl"
+#include "flow.dl"
+#include "capabilities.dl"
+#include "memory.dl"
+#include "names.dl"
+#include "tests.dl"
+#include "types.dl"
+#include "stack.dl"

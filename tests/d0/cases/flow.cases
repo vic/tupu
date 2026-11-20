@@ -1,0 +1,61 @@
+# Flow family cases (sourced by run.sh; vic/spec/rules.md 5). Expected rows are in expected.txt.
+# One condition c at point p1 with a true arm pt (scope T), a false arm pf (scope F) and a join pj.
+fx() { verdict flow "$1" "${2:-}" flow; }
+br() { mk "$1"; f scope R T F; f parent 'T R' 'F R'; f value x y; f entry p1
+  f next 'p1 pt' 'p1 pf' 'pt pj' 'pf pj'
+  f operation 'c Branch p1 R' 'ot Work pt T' 'of Work pf F' 'oj Work pj R'
+  f condition "c x $2 y T F"; f trueEdge 'c pt'; f falseEdge 'c pf'; }
+br brOk Less; f baseBelow 'x y T'; f baseLeq 'y x F'
+br brLtTrue Less; f baseBelow 'x y R'
+br brLtFalse Less; f baseLeq 'y x R'
+br brLeTrue LessOrEqual; f baseLeq 'x y R'
+br brLeFalse LessOrEqual; f baseBelow 'y x R'
+br brEqTrue Equal; f baseLeq 'x y R' 'y x R'
+br brEqFalse Equal; f baseBelow 'x y R'
+br brNeTrue NotEqual; f baseBelow 'x y R'
+br brNeFalse NotEqual; f baseLeq 'x y R' 'y x R'
+br brLiterals Less; f lit 'x 1' 'y 2'; f valueType 'x U8' 'y U8'; f typeRange 'U8 0 255'
+# a loop whose head condition the invariant decides: the exit is never reached
+mk loopDecided; f scope R H; f parent 'H R'; f value i n; f entry h; f next 'h b' 'b h' 'h x'
+f operation 'c Branch h H' 'ob Work b H' 'ox Work x R'; f condition 'c i Less n H R'; f trueEdge 'c b'; f falseEdge 'c x'; f baseBelow 'i n H'
+mk loopOk; f scope R H; f parent 'H R'; f value i n; f entry h; f next 'h b' 'b h' 'h x'
+f operation 'c Branch h H' 'ob Work b H' 'ox Work x R'; f condition 'c i Less n H R'; f trueEdge 'c b'; f falseEdge 'c x'
+# reachability
+mk neverReached; f scope R; f entry p1; f next 'p1 p2'; f operation 'o1 Work p1 R' 'o2 Work p2 R' 'o9 Work p9 R'
+mk allReached; f scope R; f entry p1; f next 'p1 p2'; f operation 'o1 Work p1 R' 'o2 Work p2 R'
+# expressions, binders, parameters
+mk exprUnused; f scope R; f expression e1 e2 e3; f consumed e1; f effectful e2
+mk binders; f scope R; f entry p1; f next 'p1 p2'; f operation 'o1 Work p1 R' 'o9 Work p9 R'; f binder b1 b2 b3; f binderRead 'b1 p1' 'b3 p9'
+mk params; f scope R; f entry p1; f operation 'o1 Work p1 R' 'o9 Work p9 R'; f parameter q1 q2; f binderRead 'q1 p1' 'q2 p9'
+mk matchKnown; f scope R; f value v; f matchArm 'a1 v k1'; f builtBy 'v k1'
+mk matchUnknown; f scope R; f value v; f matchArm 'a1 v k1'
+for x in brOk brLtTrue brLtFalse brLeTrue brLeFalse brEqTrue brEqFalse brNeTrue brNeFalse loopDecided loopOk neverReached allReached exprUnused binders params matchKnown matchUnknown; do fx $x; done
+verdict flow brLiterals "" flowarith
+fx brOk -MMUTANT_SELFSCOPE
+fx brLtTrue -MMUTANT_DEADEDGE
+fx brLtTrue -MMUTANT_DEC_LT_T
+fx brLtFalse -MMUTANT_DEC_LT_F
+fx brLeTrue -MMUTANT_DEC_LE_T
+fx brLeFalse -MMUTANT_DEC_LE_F
+fx brEqTrue -MMUTANT_DEC_EQ_T
+fx brEqFalse -MMUTANT_DEC_EQ_F
+fx brNeTrue -MMUTANT_DEC_NE_T
+fx brNeFalse -MMUTANT_DEC_NE_F
+fx neverReached -MMUTANT_NOREACH
+fx exprUnused -MMUTANT_NOCONSUMED
+fx exprUnused -MMUTANT_NOEFFECT
+fx binders -MMUTANT_READANY
+fx params -MMUTANT_PARAMREAD
+fx matchUnknown -MMUTANT_NOARM
+
+# ruling S37: the extractor states every input row an operation kind needs; a missed row keeps unmodeled-operation owed
+rw() { mk "$1"; f scope R; f entry p1; }
+rw rowsWriteOk; f operation 'w1 ElementWrite p1 R'; f requiresRow 'ElementWrite Overwrite' 'ElementWrite OperationRow'; f emitted 'w1 Overwrite' 'w1 OperationRow'
+rw rowsWriteMissing; f operation 'w1 ElementWrite p1 R'; f requiresRow 'ElementWrite Overwrite' 'ElementWrite OperationRow'; f emitted 'w1 OperationRow'
+rw rowsAliasOk; f operation 'b1 PatternBind p1 R'; f requiresRow 'PatternBind Alias' 'PatternBind OperationRow'; f emitted 'b1 Alias' 'b1 OperationRow'
+rw rowsAliasMissing; f operation 'b1 PatternBind p1 R'; f requiresRow 'PatternBind Alias' 'PatternBind OperationRow'; f emitted 'b1 OperationRow'
+rw rowsUnknownKind; f next 'p1 p2'; f operation 'w1 Strange p1 R' 'w2 ElementWrite p2 R'; f requiresRow 'ElementWrite OperationRow'; f emitted 'w1 OperationRow' 'w2 OperationRow'
+for x in rowsWriteOk rowsWriteMissing rowsAliasOk rowsAliasMissing rowsUnknownKind; do fx $x; done
+fx rowsWriteMissing -MMUTANT_ANYROW
+fx rowsAliasMissing -MMUTANT_ANYROW
+fx rowsUnknownKind -MMUTANT_ROWSOFF

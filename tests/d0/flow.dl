@@ -1,0 +1,102 @@
+// Flow family (vic/spec/rules.md 5): reachability, unused expressions and binders, decided branches (T14, T8, S9).
+// Theory: reachability over the control-flow graph is the least fixed point of the successor relation (Kildall 1973);
+// a branch whose condition the facts decide is the dead-branch test of constant propagation (Wegman and Zadeck,
+// "Constant Propagation with Conditional Branches", TOPLAS 1991), here with order facts instead of constants.
+// The scope of a condition is the scope BEFORE it, so a condition never decides itself (credits of its own test
+// stand in its true and false scopes only).
+// Mutants (cases/flow.cases): MUTANT_NOREACH, MUTANT_DEADEDGE, MUTANT_SELFSCOPE, MUTANT_DEC_LT_T, MUTANT_DEC_LT_F,
+// MUTANT_DEC_LE_T, MUTANT_DEC_LE_F, MUTANT_DEC_EQ_T, MUTANT_DEC_EQ_F, MUTANT_DEC_NE_T, MUTANT_DEC_NE_F,
+// MUTANT_NOCONSUMED, MUTANT_NOEFFECT, MUTANT_READANY, MUTANT_NOARM, MUTANT_PARAMREAD, MUTANT_ROWSOFF, MUTANT_ANYROW (S37).
+#ifndef STIGI_FLOW
+#define STIGI_FLOW
+#include "bounds.dl"
+
+.decl decidedTrue(o: Operation)
+.decl decidedFalse(o: Operation)
+.decl deadEdge(p: Point, q: Point)
+.decl reachable(p: Point)
+
+// ---- decided conditions: the scope before the condition holds facts that settle it ----
+#ifndef MUTANT_DEC_LT_T
+decidedTrue(o) :- condition(o, x, "Less", y, _, _), operation(o, _, _, s), below(x, y, s).
+#endif
+#ifndef MUTANT_DEC_LT_F
+decidedFalse(o) :- condition(o, x, "Less", y, _, _), operation(o, _, _, s), leq(y, x, s).
+#endif
+#ifndef MUTANT_DEC_LE_T
+decidedTrue(o) :- condition(o, x, "LessOrEqual", y, _, _), operation(o, _, _, s), leq(x, y, s).
+#endif
+#ifndef MUTANT_DEC_LE_F
+decidedFalse(o) :- condition(o, x, "LessOrEqual", y, _, _), operation(o, _, _, s), below(y, x, s).
+#endif
+#ifndef MUTANT_DEC_EQ_T
+decidedTrue(o) :- condition(o, x, "Equal", y, _, _), operation(o, _, _, s), leq(x, y, s), leq(y, x, s).
+#endif
+#ifndef MUTANT_DEC_EQ_F
+decidedFalse(o) :- condition(o, x, "Equal", y, _, _), operation(o, _, _, s), below(x, y, s).
+decidedFalse(o) :- condition(o, x, "Equal", y, _, _), operation(o, _, _, s), below(y, x, s).
+#endif
+#ifndef MUTANT_DEC_NE_T
+decidedTrue(o) :- condition(o, x, "NotEqual", y, _, _), operation(o, _, _, s), below(x, y, s).
+decidedTrue(o) :- condition(o, x, "NotEqual", y, _, _), operation(o, _, _, s), below(y, x, s).
+#endif
+#ifndef MUTANT_DEC_NE_F
+decidedFalse(o) :- condition(o, x, "NotEqual", y, _, _), operation(o, _, _, s), leq(x, y, s), leq(y, x, s).
+#endif
+#ifdef MUTANT_SELFSCOPE
+decidedTrue(o) :- condition(o, x, "Less", y, ts, _), below(x, y, ts).
+#endif
+// a match whose scrutinee was built by a known constructor in the same body is decided
+#ifndef MUTANT_NOARM
+.decl decidedArm(o: Operation)
+decidedArm(o) :- matchArm(o, v, _), builtBy(v, _).
+cleared(o, "branch-decided") :- matchArm(o, _, _), !decidedArm(o).
+#endif
+cleared(o, "branch-decided") :- condition(o, _, _, _, _, _), !decidedTrue(o), !decidedFalse(o).
+
+// ---- ruling S37: the extractor states every input row an operation kind needs; a kind without a model stays owed ----
+#ifdef MUTANT_ROWSOFF
+cleared(o, "unmodeled-operation") :- operation(o, _, _, _).
+#elif defined(MUTANT_ANYROW)
+cleared(o, "unmodeled-operation") :- operation(o, k, _, _), requiresRow(k, r), emitted(o, r).
+#else
+.decl missingRow(o: Operation)
+missingRow(o) :- operation(o, k, _, _), requiresRow(k, r), !emitted(o, r).
+cleared(o, "unmodeled-operation") :- operation(o, k, _, _), requiresRow(k, _), !missingRow(o).
+#endif
+
+// ---- reachability: a decided condition takes only one of its edges ----
+#ifdef MUTANT_DEADEDGE
+deadEdge(p, q) :- next(p, q), 1 = 2.
+#else
+deadEdge(p, q) :- decidedTrue(o), operation(o, _, p, _), falseEdge(o, q).
+deadEdge(p, q) :- decidedFalse(o), operation(o, _, p, _), trueEdge(o, q).
+#endif
+reachable(p) :- entry(p).
+reachable(q) :- reachable(p), next(p, q), !deadEdge(p, q).
+#ifdef MUTANT_NOREACH
+cleared(o, "never-reached") :- operation(o, _, _, _).
+#else
+cleared(o, "never-reached") :- operation(o, _, p, _), reachable(p).
+#endif
+
+// ---- unused expressions, binders and parameters ----
+#ifndef MUTANT_NOCONSUMED
+cleared(e, "expression-unused") :- consumed(e).
+#endif
+#ifndef MUTANT_NOEFFECT
+cleared(e, "expression-unused") :- effectful(e).
+#endif
+// a read counts when some path from the entry reaches it
+#ifdef MUTANT_READANY
+cleared(b, "binder-unused") :- binderRead(b, _).
+cleared(b, "unused-parameter") :- binderRead(b, _).
+#else
+cleared(b, "binder-unused") :- binderRead(b, p), reachable(p).
+#ifdef MUTANT_PARAMREAD
+cleared(b, "unused-parameter") :- binderRead(b, _).
+#else
+cleared(b, "unused-parameter") :- binderRead(b, p), reachable(p).
+#endif
+#endif
+#endif

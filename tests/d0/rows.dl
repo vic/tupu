@@ -1,0 +1,15 @@
+// Termination oracle of ruling S25: the number of `upper` and `lower` rows of a loop case. `bounded` holds when the
+// count is at most 200. Run with -DROWS to print the count itself (plan/experiments.md).
+#include "arith.dl"
+.decl rowCount(n: number)
+rowCount(n) :- n = count : { upper(_, _, _) }.
+.decl lowerCount(n: number)
+lowerCount(n) :- n = count : { lower(_, _, _) }.
+.decl bounded(answer: symbol)
+bounded("yes") :- rowCount(n), n <= 200, lowerCount(m), m <= 200.
+#ifdef ROWS
+.output rowCount(IO=stdout)
+.output lowerCount(IO=stdout)
+#else
+.output bounded(IO=stdout)
+#endif

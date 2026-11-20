@@ -1,0 +1,51 @@
+// Contracts family (vic/spec/rules.md 4): stated facts (S21), owed order facts, denials, relation arity.
+// Theory: assertions at program points are Floyd 1967 and Hoare 1969; denials are integrity constraints (Nicolas 1982);
+// the check "every owed row is derived" is one negation over a completed lower stratum (Apt, Blair, Walker 1988).
+// A callee exit fact enters as a credit row at the scope of the call (the extractor substitutes the result value);
+// a recursive def uses its own exit facts at its recursive calls by induction on the depth (rules.md 4).
+// A fact on a user relation gives no credit row: user knowledge never reaches `below` or `leq` (facts.md 1).
+// Mutants: MUTANT_FROMOWED, MUTANT_DENYANY, MUTANT_DENYRANGE, MUTANT_ARITYLOW, MUTANT_USERDENIAL (cases/run.sh);
+// MUTANT_ANYROW, MUTANT_BELOWASLEQ, MUTANT_DOMOFF are in bounds.dl.
+#ifndef STIGI_CONTRACTS
+#define STIGI_CONTRACTS
+#include "bounds.dl"
+#include "stack.dl"
+
+#ifdef MUTANT_FROMOWED
+cleared(u, "facts-missing") :- instanceOf(i, u), operationOf(o, i), leqOwed(o, _, _, _, _).
+#else
+cleared(u, "facts-missing") :- statesFact(u, _).
+#endif
+
+// ---- denials: a point of the range is violated when every atom of the denial holds there ----
+.decl atomHolds(d: Atom, k: Atom, p: Point)
+.decl hasAtom(d: Atom)
+.decl violated(d: Atom, p: Point)
+.decl violatedAt(p: Point)
+hasAtom(d) :- denialAtom(d, _).
+atomHolds(d, k, p) :- denyOperation(d, k, c, op), operationCall(_, c, op, p).
+#ifdef MUTANT_USERDENIAL
+#else
+atomHolds(d, k, p) :- denyUser(d, k, p).
+#endif
+#ifdef MUTANT_DENYANY
+violated(d, p) :- denialRange(d, p), atomHolds(d, _, p).
+#elif defined(MUTANT_DENYRANGE)
+.decl missingAtom(d: Atom, p: Point)
+missingAtom(d, p) :- denialAtom(d, k), denialRange(d, p), !atomHolds(d, k, p).
+violated(d, p) :- hasAtom(d), atomHolds(d, _, p), !missingAtom(d, p).
+#else
+.decl missingAtom(d: Atom, p: Point)
+missingAtom(d, p) :- denialRange(d, p), denialAtom(d, k), !atomHolds(d, k, p).
+violated(d, p) :- denialRange(d, p), hasAtom(d), !missingAtom(d, p).
+#endif
+violatedAt(p) :- violated(_, p).
+cleared(p, "denial-violated") :- denialRange(_, p), !violatedAt(p).
+
+// ---- relation arity: the atom has as many terms as the relation has columns ----
+#ifdef MUTANT_ARITYLOW
+cleared(a, "relation-arity") :- atomUse(a, rel, n), relationColumns(rel, m), n <= m.
+#else
+cleared(a, "relation-arity") :- atomUse(a, rel, n), relationColumns(rel, n).
+#endif
+#endif

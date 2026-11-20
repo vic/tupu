@@ -1,0 +1,4 @@
+# Malformed programs (sourced by run.sh; ruling S28). The oracle is Souffle's refusal: the first Error line of the
+# program in refuse/NAME.dl, without its file and line. The seed engine and the engine of stigi must refuse the same
+# programs with the codes rule-unsafe, negation-cycle, relation-arity and unresolved-name.
+for x in unboundHead unboundNegation unboundComparison negationCycle negationSelf relationArity unknownRelation stratifiedOk; do queue refuse refuse "$x" "" refuse; done

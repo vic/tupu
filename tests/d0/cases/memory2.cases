@@ -1,0 +1,124 @@
+# Memory family cases beyond liveness (sourced by run.sh; vic/spec/rules.md 7, memory.md). Expected rows are in expected.txt.
+mq() { relrows memory "$1" "${2:-}" memory reject; }
+m5() { mk "$1"; f scope R; f entry "${2:-p1}"; }
+# ---- escape ----
+m5 escapeOk; f heap r1 r2; f handleNest 'r2 r1'; f alloc 'v r1 p1' 'c r2 p2'; f next 'p1 p2' 'p2 p3' 'p3 p4'; f move 'p3 v c'; f use 'p4 c'; f exit p4
+m5 escapeBad; f heap r1 r2; f alloc 'v r1 p1' 'c r2 p2'; f next 'p1 p2' 'p2 p3' 'p3 p4'; f move 'p3 v c'; f use 'p4 c'; f exit p4
+m5 escapeLonger; f heap r1 r2; f handleNest 'r1 r2'; f alloc 'v r1 p1' 'c r2 p2'; f next 'p1 p2' 'p2 p3' 'p3 p4'; f move 'p3 v c'; f use 'p4 c'; f exit p4
+m5 returnEscape; f heap r; f handleRange 'r p1 p3'; f alloc 'v r p1'; f next 'p1 p2' 'p2 p3'; f returnOf 'p3 v'; f exit p3
+m5 returnOk; f heap r; f alloc 'v r p1'; f next 'p1 p2' 'p2 p3'; f returnOf 'p3 v'; f exit p3
+# ---- ownership ----
+m5 movedTwice; f heap r; f alloc 'v r p1' 'c1 r p2' 'c2 r p3'; f next 'p1 p2' 'p2 p3' 'p3 p4' 'p4 px' 'px p5' 'p5 p6'; f move 'p4 v c1' 'p5 v c2'; f use 'p6 c1' 'p6 c2'; f exit p6
+m5 ownerDiffers p0; f heap r; f alloc 'c r p0' 'v r p1'; f next 'p0 p1' 'p1 p2' 'p2 pa' 'p2 pb' 'pa pj' 'pb pj'; f join pj; f move 'pa v c'; f use 'pj v' 'pj c'; f exit pj
+m5 ownerSame p0; f heap r; f alloc 'c r p0' 'v r p1'; f next 'p0 p1' 'p1 p2' 'p2 pa' 'p2 pb' 'pa pj' 'pb pj'; f join pj; f move 'pa v c' 'pb v c'; f use 'pj v' 'pj c'; f exit pj
+# ---- aliases and retained objects ----
+m5 aliasAcross; f heap r; f alloc 'c r p1' 'v r p2'; f next 'p1 p2' 'p2 p3' 'p3 p4' 'p4 p5'; f move 'p3 v c'; f overwrite 'p4 c'; f alias 'a v'; f binderRead 'a p5'; f use 'p5 c'; f exit p5
+m5 aliasOk; f heap r; f alloc 'c r p1' 'v r p2'; f next 'p1 p2' 'p2 p3' 'p3 p4' 'p4 p5'; f move 'p3 v c'; f overwrite 'p4 c'; f alias 'a v'; f binderRead 'a p3'; f use 'p5 c'; f exit p5
+m5 deadRetained; f heap r; f alloc 'c r p1' 'v r p2' 'w r p4'; f next 'p1 p2' 'p2 p3' 'p3 p4' 'p4 p5'; f move 'p3 v c'; f use 'p5 c' 'p5 w'; f exit p5
+m5 deadRetainedRead; f heap r; f alloc 'c r p1' 'v r p2' 'w r p4'; f next 'p1 p2' 'p2 p3' 'p3 p4' 'p4 p5'; f move 'p3 v c'; f use 'p5 c' 'p5 w' 'p5 v'; f exit p5
+# ---- guards of the free facts (the rules are correct, so the cases are clean and the mutants break the free facts) ----
+m5 freeOk; f heap h; f alloc 'a h p1'; f next 'p1 p2' 'p2 p3' 'p3 p4'; f use 'p2 a'; f exit p4
+# ---- writes, capacity, fills, externs, handler state ----
+m5 writeUnread; f heap r; f alloc 'c r p1'; f elementWrite 'w c p2'; f next 'p1 p2' 'p2 p3'; f exit p3
+m5 writeRead; f heap r; f alloc 'c r p1'; f elementWrite 'w c p2'; f next 'p1 p2' 'p2 p3'; f use 'p3 c'; f exit p3
+m5 writeStatic; f staticObject s; f elementWrite 'w s p2'; f next 'p1 p2' 'p2 p3'; f use 'p3 s'
+m5 capUnused; f typeRange 'T4 0 4'; f value i; f valueType 'i T4'; f arrayLen 'arr 8'; f access 'arr i R'
+m5 capOk; f typeRange 'T4 0 4'; f value i; f valueType 'i T4'; f arrayLen 'arr 4'; f access 'arr i R'
+m5 fillBad; f fillOp 'o1 Arr'; f handleCarrying Arr
+m5 fillOk; f fillOp 'o1 U8'; f handleCarrying Arr
+m5 externBad; f externParam 'e1 0'
+m5 externOk; f externParam 'e1 0'; f externSummary e1
+m5 handlerState; f stateAddress a1 a2 a3; f addressUse 'a1 Call' 'a2 Store' 'a3 Return'
+# ---- summaries across calls ----
+m5 sumTwice q0; f heap r; f alloc 'd r q0' 'v r q1'; f next 'q0 q1' 'q1 q2' 'q2 q3' 'q3 q4'
+f entry pf1; f operation 'oc Call q2 R' 'of1 Move pf1 R'; f operationOf 'oc g1' 'of1 f1'; f callOf 'oc f1 Normal'; f callArg 'oc 0 v'; f param 'f1 0 x'; f move 'pf1 x cc' 'q3 v d'; f use 'q4 d'; f exit q4
+m5 sumAlloc q0; f heap r; f alloc 'c r q0' 'v r q1' 'w r pa1'; f next 'q0 q1' 'q1 q2' 'q2 q3' 'q3 q4'
+f entry pa1; f operation 'oc Call q3 R' 'oa Alloc pa1 R'; f operationOf 'oc g1' 'oa a1'; f callOf 'oc a1 Normal'; f move 'q2 v c'; f use 'q4 c'; f exit q4
+m5 sumOver q0; f heap r; f alloc 'c r q0' 'v r q1'; f next 'q0 q1' 'q1 q2' 'q2 q3' 'q3 q4'
+f entry pf1; f operation 'oc Call q3 R' 'of1 Over pf1 R'; f operationOf 'oc g1' 'of1 f1'; f callOf 'oc f1 Normal'; f callArg 'oc 0 c'; f param 'f1 0 x'; f overwrite 'pf1 x'; f move 'q2 v c'; f alias 'a v'; f binderRead 'a q4'; f use 'q4 c'; f exit q4
+for x in escapeOk escapeBad escapeLonger returnEscape returnOk movedTwice ownerDiffers ownerSame aliasAcross aliasOk deadRetained deadRetainedRead freeOk writeUnread writeRead writeStatic capUnused capOk fillBad fillOk externBad externOk handlerState sumTwice sumAlloc sumOver; do mq $x; done
+mq escapeBad -MMUTANT_ESCOFF
+mq returnEscape -MMUTANT_ESCOFF
+mq escapeLonger -MMUTANT_ESCNEST
+mq movedTwice -MMUTANT_MOVEDOFF
+mq ownerDiffers -MMUTANT_OWNEROFF
+mq aliasAcross -MMUTANT_ALIASOFF
+mq deadRetained -MMUTANT_RETAINOFF
+mq freeOk -MMUTANT_EARLYFREE
+mq freeOk -MMUTANT_NOFREE
+mq freeOk -MMUTANT_EXITDOUBLE
+mq writeUnread -MMUTANT_WRITEANY
+mq writeStatic -MMUTANT_STATICOFF
+mq capUnused -MMUTANT_CAPOFF
+mq fillBad -MMUTANT_FILLOFF
+mq externBad -MMUTANT_EXTOFF
+mq handlerState -MMUTANT_ADDROFF
+mq sumTwice -MMUTANT_NOSUMMARY
+mq sumAlloc -MMUTANT_NOALLOCSUM
+mq sumOver -MMUTANT_NOOVERSUM
+m5 escapeDeep; f heap r1 r2 r3; f handleNest 'r2 r1' 'r3 r2'; f alloc 'v r1 p1' 'c r3 p2'; f next 'p1 p2' 'p2 p3' 'p3 p4'; f move 'p3 v c'; f use 'p4 c'; f exit p4
+m5 aliasDeep; f heap r; f alloc 'c r p1' 'm r p2' 'v r p3'; f next 'p1 p2' 'p2 p3' 'p3 p4' 'p4 p5' 'p5 p6' 'p6 p7'; f move 'p4 v m' 'p5 m c'; f overwrite 'p6 c'; f alias 'a v'; f binderRead 'a p7'; f use 'p7 c'; f exit p7
+mq escapeDeep
+mq escapeDeep -MMUTANT_NOOUTTRANS
+mq aliasDeep
+mq aliasDeep -MMUTANT_NOHOLDSTRANS
+mq returnOk -MMUTANT_NORETURNMOVE
+mq movedTwice -MMUTANT_NOMOVEDPROP
+# ruling S34: a content read of the container keeps its objects live; a sibling field read does not
+m5 siblingDead; f heap r; f alloc 'e r p1' 'big r p2' 'small r p3' 'w r p6'; f next 'p1 p2' 'p2 p3' 'p3 p4' 'p4 p5' 'p5 p6' 'p6 p7'; f move 'p4 big e' 'p5 small e'; f use 'p7 e' 'p7 small' 'p7 w'; f exit p7
+m5 siblingLive; f heap r; f alloc 'e r p1' 'big r p2' 'small r p3' 'w r p6'; f next 'p1 p2' 'p2 p3' 'p3 p4' 'p4 p5' 'p5 p6' 'p6 p7'; f move 'p4 big e' 'p5 small e'; f use 'p7 e' 'p7 small' 'p7 w' 'p7 big'; f exit p7
+m5 sumContent; f heap r; f alloc 'c r p1' 'v r p2' 'w r p4'; f next 'p1 p2' 'p2 p3' 'p3 p4' 'p4 p5' 'p5 p6'
+f entry pf1; f operation 'oc Call p5 R' 'of1 Read pf1 R'; f operationOf 'oc g1' 'of1 f1'; f callOf 'oc f1 Normal'; f callArg 'oc 0 c'; f param 'f1 0 x'; f contentRead 'pf1 x'; f move 'p3 v c'; f use 'p6 c' 'p6 w'; f exit p6
+mq siblingDead
+mq siblingLive
+mq sumContent
+mq siblingDead -MMUTANT_SIBLINGCONTENT
+mq arenaLoopKept -MMUTANT_NOCONTENT
+mq sumContent -MMUTANT_NOREADSSUM
+mq sumContent -MMUTANT_NOREADSELEMENTS
+# a read in dead code keeps nothing alive (ruling S29): the only use of a stands at a point no path reaches
+m5 deadRead p0; f heap r; f scope T; f parent 'T R'; f value x y; f alloc 'a r p0'; f next 'p0 p1' 'p1 pt' 'p1 p9'; f operation 'c Branch p1 R'; f condition 'c x Less y T R'; f trueEdge 'c pt'; f falseEdge 'c p9'; f baseBelow 'x y R'; f use 'p9 a'; f exit pt p9
+mq deadRead
+mq deadRead -MMUTANT_UNREACHREAD
+# ---- decision relations: regions, reuse, summaries (memoryout.dl) ----
+ro() { relrows memory "$1" "${2:-}" memoryout "$3"; }
+m5 regionAll; f arena r; f alloc 'a r p1' 'b r p2'; f use 'p3 a' 'p4 b'; f next 'p1 p2' 'p2 p3' 'p3 p4'; f exit p4
+m5 regionMid; f arena r; f alloc 'a r p1'; f use 'p2 a'; f next 'p1 p2' 'p2 p3' 'p3 p4'; f exit p4
+m5 regionAlloc; f arena r; f alloc 'a r p1'; f next 'p1 p2'; f exit p2
+m5 reuseSame; f heap h; f alloc 'a h p1' 'b h p3'; f use 'p2 a' 'p4 b'; f next 'p1 p2' 'p2 p3' 'p3 p4'; f exit p4; f sizeClass 'a 64' 'b 64'
+m5 reuseSize; f heap h; f alloc 'a h p1' 'b h p3'; f use 'p2 a' 'p4 b'; f next 'p1 p2' 'p2 p3' 'p3 p4'; f exit p4; f sizeClass 'a 64' 'b 128'
+m5 sumResult q0; f operation 'oc Ret qr R'; f operationOf 'oc f1'; f heap r; f alloc 'n r qa'; f param 'f1 0 x'; f returnOf 'qr x'
+m5 sumFresh q0; f operation 'oc Ret qr R'; f operationOf 'oc f1'; f heap r; f alloc 'n r qa'; f returnOf 'qr n'
+ro regionAll '' regionEnd
+ro regionAll '' regionEndAtExit
+ro regionMid '' regionEnd
+ro regionMid '' regionEndAtExit
+ro regionAlloc '' regionEnd
+ro reuseSame '' reuseAt
+ro reuseSize '' reuseAt
+ro sumResult '' resultFrom
+ro sumFresh '' resultFresh
+ro regionAll -MMUTANT_REGEND regionEnd
+ro regionAll -MMUTANT_REGEXIT regionEndAtExit
+ro regionAlloc -MMUTANT_REGALLOC regionEnd
+ro reuseSize -MMUTANT_REUSEANY reuseAt
+ro sumResult -MMUTANT_RESFROMOFF resultFrom
+ro sumFresh -MMUTANT_RESFRESHOFF resultFresh
+
+# ruling S36: a mutant for every rule. Propagation rules matter only on a longer path; the two free guards matter only
+# when the emitter's own decision is wrong, so their mutants run together with the defect they must still detect.
+m5 localFar; f heap h; f alloc 'a h p1'; f next 'p1 p2' 'p2 p3' 'p3 p4'; f use 'p3 a'; f exit p4
+m5 aliasFar; f heap r; f alloc 'c r p1' 'v r p2'; f next 'p1 p2' 'p2 p3' 'p3 p4' 'p4 px' 'px p5'; f move 'p3 v c'; f overwrite 'p4 c'; f alias 'a v'; f binderRead 'a p5'; f use 'p5 c'; f exit p5
+m5 freeFar; f heap h; f alloc 'a h p1'; f next 'p1 p2' 'p2 p3' 'p3 p4' 'p4 p5'; f use 'p2 a' 'p5 a'; f exit p5
+mq localFar
+mq aliasFar
+mq freeFar
+mq localFar -MMUTANT_NOLOCALPROP
+mq aliasFar -MMUTANT_NONEXTPLUS
+mq deadRetained -MMUTANT_NOHOLDSBASE
+mq deadRetainedRead -MMUTANT_NODIRECTOUT
+mq deadRetainedRead -MMUTANT_NODIRECTPROP
+mq sumTwice -MMUTANT_NOPOINTINST
+mq freeFar -MMUTANT_FREEFIRST
+mq freeFar "-MMUTANT_FREEFIRST MUTANT_NOFREEDPROP"
+mq freeOk "-MMUTANT_NOFREE MUTANT_NOPENDPROP"

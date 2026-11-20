@@ -1,0 +1,330 @@
+// Memory family: last use, free placement, region tightness, ownership, escape, aliases, writes, summaries.
+// Theory: Kildall 1973 (liveness), Tofte-Talpin 1997 (regions), Perceus 2021 and ASAP (free at last use, unique owner),
+// Polonius (Matsakis 2018; Stjerna 2020: loan invalidation for alias-across-write), Cousot-Cousot 1977 (summaries as
+// a least fixed point over the call graph). A read counts only at a point that a path from the entry reaches (S29).
+// Mutants (cases): MUTANT_NOKILL, MUTANT_NOSUMMARY, MUTANT_NOALLOCSUM, MUTANT_NOOVERSUM, MUTANT_ESCOFF, MUTANT_ESCNEST,
+// MUTANT_MOVEDOFF, MUTANT_OWNEROFF, MUTANT_ALIASOFF, MUTANT_RETAINOFF, MUTANT_EARLYFREE, MUTANT_NOFREE,
+// MUTANT_EXITDOUBLE, MUTANT_WRITEANY, MUTANT_STATICOFF, MUTANT_CAPOFF, MUTANT_FILLOFF, MUTANT_EXTOFF, MUTANT_ADDROFF,
+// MUTANT_NOLOCALPROP, MUTANT_NOHOLDSBASE, MUTANT_NODIRECTOUT, MUTANT_NODIRECTPROP, MUTANT_NOFREEDPROP, MUTANT_NOPENDPROP,
+// MUTANT_NONEXTPLUS, MUTANT_FREEFIRST, MUTANT_NOPOINTINST (ruling S36), MUTANT_NOCONTENT, MUTANT_SIBLINGCONTENT, MUTANT_NOREADSSUM, MUTANT_NOREADSELEMENTS, MUTANT_NORETURNMOVE, MUTANT_NOHOLDSTRANS, MUTANT_NOOUTTRANS, MUTANT_NOMOVEDPROP, MUTANT_UNREACHREAD, MUTANT_RESFROMOFF, MUTANT_RESFRESHOFF, MUTANT_REGALLOC, MUTANT_REGEND, MUTANT_REGEXIT, MUTANT_REUSEANY.
+#ifndef STIGI_MEMORY
+#define STIGI_MEMORY
+#include "capabilities.dl"
+
+// ---- summaries across calls (memory.md 6): least fixed point over the call graph ----
+.decl pointInstance(p: Point, i: Instance)
+.decl moveAt(p: Point, v: Value)
+.decl overwriteAt(p: Point, c: Value)
+.decl allocatesAt(p: Point)
+.decl movesParameter(i: Instance, k: number)
+.decl overwrites(i: Instance, k: number)
+.decl resultFrom(i: Instance, k: number)
+.decl resultFresh(i: Instance)
+.decl allocates(i: Instance)
+.decl readsElements(i: Instance, k: number)
+.decl contentReadAt(p: Point, c: Value)
+#ifdef MUTANT_NOPOINTINST
+pointInstance(p, i) :- operation(o, _, p, _), operationOf(o, i), 1 = 2.
+#else
+pointInstance(p, i) :- operation(o, _, p, _), operationOf(o, i).
+#endif
+moveAt(p, v) :- move(p, v, _).
+#ifdef MUTANT_NORETURNMOVE
+moveAt(p, v) :- move(p, v, _), 1 = 2.
+#else
+moveAt(p, v) :- returnOf(p, v).
+#endif
+overwriteAt(p, c) :- overwrite(p, c).
+allocatesAt(p) :- alloc(_, _, p).
+movesParameter(i, k) :- param(i, k, v), moveAt(p, v), pointInstance(p, i).
+overwrites(i, k) :- param(i, k, v), overwrite(p, v), pointInstance(p, i).
+#ifdef MUTANT_RESFROMOFF
+resultFrom(i, k) :- param(i, k, _), 1 = 2.
+#else
+resultFrom(i, k) :- param(i, k, v), returnOf(p, v), pointInstance(p, i).
+#endif
+#ifdef MUTANT_RESFRESHOFF
+resultFresh(i) :- param(i, _, _), 1 = 2.
+#else
+resultFresh(i) :- returnOf(p, v), alloc(v, _, _), pointInstance(p, i).
+#endif
+#ifdef MUTANT_NOREADSELEMENTS
+readsElements(i, k) :- param(i, k, _), 1 = 2.
+#else
+readsElements(i, k) :- param(i, k, v), contentRead(p, v), pointInstance(p, i).
+#endif
+allocates(i) :- alloc(_, _, p), pointInstance(p, i).
+allocates(i) :- callOf(o, j, _), operationOf(o, i), allocates(j).
+#ifndef MUTANT_NOSUMMARY
+moveAt(p, v) :- callOf(o, j, _), operation(o, _, p, _), callArg(o, k, v), movesParameter(j, k).
+#endif
+#ifndef MUTANT_NOOVERSUM
+overwriteAt(p, c) :- callOf(o, j, _), operation(o, _, p, _), callArg(o, k, c), overwrites(j, k).
+#endif
+contentReadAt(p, c) :- contentRead(p, c).
+#ifndef MUTANT_NOREADSSUM
+contentReadAt(p, c) :- callOf(o, j, _), operation(o, _, p, _), callArg(o, k, c), readsElements(j, k).
+#endif
+#ifndef MUTANT_NOALLOCSUM
+allocatesAt(p) :- callOf(o, j, _), operation(o, _, p, _), allocates(j).
+#endif
+
+// a read of a container is a read of every object moved into it
+.decl holds(c: Value, v: Value)
+#ifdef MUTANT_NOHOLDSBASE
+holds(c, v) :- move(_, v, c), 1 = 2.
+#else
+holds(c, v) :- move(_, v, c).
+#endif
+#ifndef MUTANT_NOHOLDSTRANS
+holds(c, v) :- holds(c, m), holds(m, v).
+#endif
+.decl reads(p: Point, v: Value)
+#ifdef MUTANT_UNREACHREAD
+reads(p, v) :- use(p, v).
+reads(p, v) :- use(p, c), holds(c, v).
+reads(p, v) :- moveAt(p, v).
+#else
+reads(p, v) :- use(p, v), reachable(p).
+reads(p, v) :- use(p, c), holds(c, v), reachable(p).
+reads(p, v) :- moveAt(p, v), reachable(p).
+#endif
+
+// liveIn(v, p): the instance that exists before p is read at p or later; a new allocation ends the old instance
+.decl liveIn(v: Value, p: Point)
+.decl liveOut(v: Value, p: Point)
+liveOut(v, p) :- next(p, q), liveIn(v, q).
+liveIn(v, p) :- reads(p, v).
+#ifdef MUTANT_NOKILL
+liveIn(v, p) :- liveOut(v, p).
+#else
+liveIn(v, p) :- liveOut(v, p), !alloc(v, _, p).
+#endif
+
+// local(v, p): an instance owned by a local binder reaches p (allocated, not moved, not allocated again)
+.decl local(v: Value, p: Point)
+local(v, q) :- alloc(v, _, p), next(p, q).
+#ifdef MUTANT_NOLOCALPROP
+local(v, q) :- local(v, p), next(p, q), 1 = 2.
+#else
+local(v, q) :- local(v, p), next(p, q), !moveAt(p, v), !alloc(v, _, p).
+#endif
+// alive(v, p): the local instance is still needed at p
+.decl alive(v: Value, p: Point)
+alive(v, p) :- alloc(v, _, p).
+alive(v, p) :- local(v, p), liveIn(v, p).
+
+// decisions the emitter reads: a heap object is freed on the edge where it stops being live
+.decl freeEdge(v: Value, p: Point, q: Point)
+.decl freeAtExit(v: Value, p: Point)
+#ifdef MUTANT_EARLYFREE
+freeEdge(v, p, q) :- alloc(v, r, _), heap(r), alive(v, p), next(p, q), !moveAt(p, v).
+#elif defined(MUTANT_FREEFIRST)
+freeEdge(v, p, q) :- alloc(v, r, _), heap(r), alloc(v, _, p), next(p, q), !moveAt(p, v).
+#elif defined(MUTANT_NOFREE)
+freeEdge(v, p, q) :- next(p, q), alloc(v, _, _), 1 = 2.
+#else
+freeEdge(v, p, q) :- alloc(v, r, _), heap(r), alive(v, p), next(p, q), !liveIn(v, q), !moveAt(p, v).
+#endif
+#ifdef MUTANT_EXITDOUBLE
+freeAtExit(v, p) :- alloc(v, r, _), heap(r), local(v, p), exit(p), !moveAt(p, v).
+#elif defined(MUTANT_NOFREE)
+freeAtExit(v, p) :- exit(p), alloc(v, _, _), 1 = 2.
+#else
+freeAtExit(v, p) :- alloc(v, r, _), heap(r), alive(v, p), exit(p), !moveAt(p, v).
+#endif
+.output freeEdge(IO=stdout)
+.output freeAtExit(IO=stdout)
+
+// regions: live while one of their objects is live or allocated; the end is the edge where that stops (or the exit)
+.decl regionLive(r: Region, p: Point)
+.decl regionEnd(r: Region, p: Point, q: Point)
+.decl regionEndAtExit(r: Region, p: Point)
+regionLive(r, p) :- alloc(v, r, _), liveIn(v, p).
+#ifndef MUTANT_REGALLOC
+regionLive(r, p) :- alloc(_, r, p).
+#endif
+#ifdef MUTANT_REGEND
+regionEnd(r, p, q) :- regionLive(r, p), next(p, q).
+#else
+regionEnd(r, p, q) :- regionLive(r, p), next(p, q), !regionLive(r, q).
+#endif
+#ifdef MUTANT_REGEXIT
+regionEndAtExit(r, p) :- regionLive(r, p), exit(p), 1 = 2.
+#else
+regionEndAtExit(r, p) :- regionLive(r, p), exit(p).
+#endif
+// a freed block of the same size class that dies on the edge before an allocation in the same kind of region is reused
+.decl reuseAt(v: Value, w: Value)
+#ifdef MUTANT_REUSEANY
+reuseAt(v, w) :- freeEdge(v, _, q), alloc(w, r, q), alloc(v, s, _), heap(r), heap(s), sizeClass(v, _), sizeClass(w, _).
+#else
+reuseAt(v, w) :- freeEdge(v, _, q), alloc(w, r, q), alloc(v, s, _), heap(r), heap(s), sizeClass(v, c), sizeClass(w, c).
+#endif
+
+// ruling S5: an arena object is dead where the same arena allocates. Stated as a violation that blocks clearing.
+.decl deadInRegion(v: Value, pa: Point)
+deadInRegion(v, pa) :- arena(r), alloc(v, r, _), alloc(_, r, pa), local(v, pa), !liveIn(v, pa).
+// T14: an object that nothing reads
+.decl unusedValue(v: Value)
+unusedValue(v) :- alloc(v, _, p), !liveOut(v, p).
+
+owes(v, "dead-in-region") :- alloc(v, r, _), arena(r).
+cleared(v, "dead-in-region") :- alloc(v, r, _), arena(r), !deadInRegion(v, _).
+owes(v, "value-unused") :- alloc(v, _, _).
+cleared(v, "value-unused") :- alloc(v, _, _), !unusedValue(v).
+
+// ---- ownership: a move needs one local owner on every path ----
+.decl movedAfter(v: Value, p: Point)
+.decl movedTwice(v: Value)
+.decl ownerDiffers(v: Value)
+movedAfter(v, q) :- moveAt(p, v), next(p, q).
+#ifndef MUTANT_NOMOVEDPROP
+movedAfter(v, q) :- movedAfter(v, p), next(p, q), !alloc(v, _, p).
+#endif
+#ifdef MUTANT_MOVEDOFF
+movedTwice(v) :- alloc(v, _, _), 1 = 2.
+#else
+movedTwice(v) :- moveAt(p, v), movedAfter(v, p).
+#endif
+#ifdef MUTANT_OWNEROFF
+ownerDiffers(v) :- alloc(v, _, _), 1 = 2.
+#else
+ownerDiffers(v) :- join(j), movedAfter(v, j), local(v, j), liveIn(v, j).
+#endif
+cleared(v, "moved-twice") :- alloc(v, _, _), !movedTwice(v).
+cleared(v, "owner-differs-by-path") :- alloc(v, _, _), !ownerDiffers(v).
+
+// ---- escape: an object stored or returned where it would outlive its region ----
+.decl outlives(longer: Handle, shorter: Handle)
+.decl escapes(v: Value)
+outlives(a, b) :- handleNest(b, a).
+#ifndef MUTANT_NOOUTTRANS
+outlives(a, c) :- outlives(a, b), outlives(b, c).
+#endif
+#ifdef MUTANT_ESCOFF
+escapes(v) :- alloc(v, _, _), 1 = 2.
+#elif defined(MUTANT_ESCNEST)
+escapes(v) :- move(_, v, c), alloc(v, r, _), alloc(c, s, _), r != s, !outlives(r, s), !outlives(s, r).
+#else
+escapes(v) :- move(_, v, c), alloc(v, r, _), alloc(c, s, _), r != s, !outlives(r, s).
+escapes(v) :- returnOf(_, v), alloc(v, r, _), handleRange(r, _, _).
+#endif
+cleared(v, "region-escape") :- alloc(v, _, _), !escapes(v).
+
+// ---- aliases: an element is overwritten while an alias of the old element is read later ----
+.decl nextPlus(p: Point, q: Point)
+.decl aliasStale(a: Value)
+nextPlus(p, q) :- next(p, q).
+#ifdef MUTANT_NONEXTPLUS
+nextPlus(p, r) :- nextPlus(p, q), next(q, r), 1 = 2.
+#else
+nextPlus(p, r) :- nextPlus(p, q), next(q, r).
+#endif
+#ifdef MUTANT_ALIASOFF
+aliasStale(a) :- alias(a, _), 1 = 2.
+#else
+aliasStale(a) :- overwriteAt(p, c), holds(c, v), alias(a, v), binderRead(a, q), nextPlus(p, q).
+#endif
+cleared(a, "alias-across-write") :- alias(a, _), !aliasStale(a).
+
+// ---- retained: a container still owns an object that is never read again while the program allocates ----
+.decl directIn(v: Value, p: Point)
+.decl directOut(v: Value, p: Point)
+.decl deadRetained(v: Value)
+.decl contentIn(c: Value, p: Point)
+.decl contentOut(c: Value, p: Point)
+.decl contentLive(v: Value, p: Point)
+directIn(v, p) :- use(p, v), reachable(p).
+directIn(v, p) :- moveAt(p, v), reachable(p).
+#ifdef MUTANT_NODIRECTOUT
+directOut(v, p) :- next(p, q), directIn(v, q), 1 = 2.
+#else
+directOut(v, p) :- next(p, q), directIn(v, q).
+#endif
+#ifdef MUTANT_NODIRECTPROP
+directIn(v, p) :- directOut(v, p), 1 = 2.
+#else
+directIn(v, p) :- directOut(v, p), !alloc(v, _, p).
+#endif
+// ruling S34: an object is live at p if it is read directly at or after p, or a container that holds it has a content read
+// at or after p. A sibling field read is a direct read of the sibling only.
+#ifdef MUTANT_NOCONTENT
+contentIn(c, p) :- contentReadAt(p, c), 1 = 2.
+#else
+contentIn(c, p) :- contentReadAt(p, c), reachable(p).
+#endif
+#ifdef MUTANT_SIBLINGCONTENT
+contentIn(c, p) :- use(p, v), holds(c, v), reachable(p).
+#endif
+contentOut(c, p) :- next(p, q), contentIn(c, q).
+contentIn(c, p) :- contentOut(c, p), !alloc(c, _, p).
+contentLive(v, p) :- holds(c, v), contentIn(c, p).
+#ifdef MUTANT_RETAINOFF
+deadRetained(v) :- alloc(v, _, _), 1 = 2.
+#else
+deadRetained(v) :- holds(c, v), movedAfter(v, p), liveIn(c, p), !directIn(v, p), !contentLive(v, p), allocatesAt(p).
+#endif
+cleared(v, "dead-retained") :- alloc(v, _, _), !deadRetained(v).
+
+// ---- guards of the free facts: they check the emitter's own decisions ----
+.decl freedAt(v: Value, p: Point)
+.decl pending(v: Value, p: Point)
+.decl useAfterFree(v: Value)
+.decl doubleFree(v: Value)
+.decl leaked(v: Value)
+freedAt(v, q) :- freeEdge(v, _, q).
+#ifdef MUTANT_NOFREEDPROP
+freedAt(v, r) :- freedAt(v, p), next(p, r), 1 = 2.
+#else
+freedAt(v, r) :- freedAt(v, p), next(p, r), !alloc(v, _, p).
+#endif
+useAfterFree(v) :- reads(p, v), freedAt(v, p).
+doubleFree(v) :- freeEdge(v, p, _), freedAt(v, p).
+doubleFree(v) :- freeAtExit(v, p), freedAt(v, p).
+pending(v, q) :- alloc(v, r, p), heap(r), next(p, q), !freeEdge(v, p, q).
+#ifdef MUTANT_NOPENDPROP
+pending(v, q) :- pending(v, p), next(p, q), 1 = 2.
+#else
+pending(v, q) :- pending(v, p), next(p, q), !moveAt(p, v), !alloc(v, _, p), !freeEdge(v, p, q).
+#endif
+leaked(v) :- pending(v, p), exit(p), !moveAt(p, v), !freeAtExit(v, p).
+cleared(v, "use-after-free") :- alloc(v, _, _), !useAfterFree(v).
+cleared(v, "double-free") :- alloc(v, _, _), !doubleFree(v).
+cleared(v, "leak") :- alloc(v, _, _), !leaked(v).
+
+// ---- element writes, array capacity, fills, externs, handler state ----
+#ifdef MUTANT_WRITEANY
+cleared(o, "write-unread") :- elementWrite(o, _, _).
+#else
+cleared(o, "write-unread") :- elementWrite(o, c, p), liveOut(c, p).
+#endif
+#ifdef MUTANT_STATICOFF
+cleared(o, "write-to-static") :- elementWrite(o, _, _).
+#else
+cleared(o, "write-to-static") :- elementWrite(o, c, _), !staticObject(c).
+#endif
+#ifdef MUTANT_CAPOFF
+cleared(v, "capacity-unused") :- arrayLen(v, _).
+#else
+cleared(v, "capacity-unused") :- arrayLen(v, n), access(v, i, s), upper(i, h, s), h >= n - 1.
+#endif
+#ifdef MUTANT_FILLOFF
+cleared(o, "fill-shares-handle") :- fillOp(o, _).
+#else
+cleared(o, "fill-shares-handle") :- fillOp(o, t), !handleCarrying(t).
+#endif
+#ifdef MUTANT_EXTOFF
+cleared(d, "extern-summary-missing") :- externParam(d, _).
+#else
+cleared(d, "extern-summary-missing") :- externParam(d, _), externSummary(d).
+#endif
+#ifdef MUTANT_ADDROFF
+cleared(a, "handler-state-escape") :- stateAddress(a).
+#else
+.decl addrEscapes(a: Value)
+addrEscapes(a) :- addressUse(a, "Store").
+addrEscapes(a) :- addressUse(a, "Return").
+cleared(a, "handler-state-escape") :- stateAddress(a), !addrEscapes(a).
+#endif
+#endif

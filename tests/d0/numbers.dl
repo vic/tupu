@@ -1,0 +1,53 @@
+// Exact comparisons of sums, differences and products inside Souffle's signed 64-bit numbers.
+// Law (vic/spec/rules.md 3, AGENTS.md): no value may wrap. Souffle wraps silently, so no rule may compute a
+// sum, difference or product that can leave [MINN, MAXN]. Each macro states an exact integer comparison with
+// operands inside that range and evaluates only values that stay inside it. The engines use 128-bit integers
+// (Stigi.Integer); these forms are the same comparisons without the extra width.
+// Oracle: cases/macros.sh checks every macro against `bc` on 28^3 operand triples that include both extremes.
+// Theory: none (elementary integer arithmetic); the case split by sign is the usual overflow test of
+// checked arithmetic, e.g. Warren, "Hacker's Delight" (2nd ed., 2012) ch. 2.
+#ifndef STIGI_NUMBERS
+#define STIGI_NUMBERS
+#define MAXN 9223372036854775807
+#define MINN (-9223372036854775807 - 1)
+// a divisor is wrapped in DV: Souffle evaluates a division before the guard that makes the divisor positive, and a
+// division by zero ends the process (measured: floating-point exception with `b > 0, a <= 10 / b` and b = 0).
+#define DV(x) max((x), 1)
+
+// a + b <= c  (MUTANT_PLAINMACRO is the control of cases/macros.sh: the plain sum wraps and the oracle must see it)
+#ifdef MUTANT_PLAINMACRO
+#define SUMLE(a, b, c) ((a) + (b) <= (c))
+#else
+#define SUMLE(a, b, c) ( ((b) > 0, (c) >= MINN + (b), (a) <= (c) - (b)) ; ((b) <= 0, ((c) > MAXN + (b) ; (a) <= (c) - (b))) )
+#endif
+// a + b >= c
+#define SUMGE(a, b, c) ( ((b) >= 0, ((c) < MINN + (b) ; (a) >= (c) - (b))) ; ((b) < 0, (c) <= MAXN + (b), (a) >= (c) - (b)) )
+// a - b <= c
+#define DIFFLE(a, b, c) ( ((b) = MINN, (c) >= 0, (a) <= (c) + MINN) ; ((b) != MINN, SUMLE(a, 0 - (b), c)) )
+// a - b >= c
+#define DIFFGE(a, b, c) ( ((b) = MINN, ((c) < 0 ; (a) >= (c) + MINN)) ; ((b) != MINN, SUMGE(a, 0 - (b), c)) )
+// a * b <= c
+#define MULLE(a, b, c) ( \
+  (((a) = 0 ; (b) = 0), (c) >= 0) ; \
+  ((a) > 0, (b) > 0, (c) >= 1, (a) <= (c) / DV(b)) ; \
+  ((a) < 0, (b) < 0, (a) != MINN, (b) != MINN, (c) >= 1, 0 - (a) <= (c) / DV(0 - (b))) ; \
+  ((a) > 0, (b) < 0, ((c) >= -1 ; ((c) <= -2, ((b) = MINN ; ((b) != MINN, (a) > (0 - ((c) + 1)) / DV(0 - (b))))))) ; \
+  ((a) < 0, (b) > 0, ((c) >= -1 ; ((c) <= -2, ((a) = MINN ; ((a) != MINN, (b) > (0 - ((c) + 1)) / DV(0 - (a))))))) )
+// a * b >= c
+#define MULGE(a, b, c) ( \
+  (((a) = 0 ; (b) = 0), (c) <= 0) ; \
+  ((a) > 0, (b) > 0, ((c) <= 1 ; ((c) >= 2, (a) > ((c) - 1) / DV(b)))) ; \
+  ((a) < 0, (b) < 0, ((a) = MINN ; (b) = MINN ; ((a) != MINN, (b) != MINN, ((c) <= 1 ; ((c) >= 2, 0 - (a) > ((c) - 1) / DV(0 - (b))))))) ; \
+  ((a) > 0, (b) < 0, (c) < 0, MULNEG(a, 0 - (b), (b), c)) ; \
+  ((a) < 0, (b) > 0, (c) < 0, MULNEG(b, 0 - (a), (a), c)) )
+// helper of MULGE: p = u * w with u > 0, w = -v > 0 or w = 2^63 (v = MINN); is -p <= -c, i.e. u * w <= -c, for c < 0
+// w is passed as the second argument only when v != MINN; the third argument is the original negative factor
+#define MULNEG(u, w, v, c) ( \
+  ((v) = MINN, (c) = MINN, (u) = 1) ; \
+  ((v) != MINN, (c) != MINN, (u) <= (0 - (c)) / DV(w)) ; \
+  ((v) != MINN, (c) = MINN, HALFCAP(w, u)) )
+// u <= floor(2^63 / w) for 1 <= w <= MAXN, with 2^63 not representable: w = 1 holds for every u;
+// otherwise 2^63/w = 2*(2^62/w) + (2*(2^62 % w) >= w) and that value is at most 2^62
+#define HALFCAP(w, u) ( ((w) = 1) ; ((w) > 1, (4611686018427387904 % DV(w)) >= (w) - (4611686018427387904 % DV(w)), (u) <= 2 * (4611686018427387904 / DV(w)) + 1) ; \
+                        ((w) > 1, (4611686018427387904 % DV(w)) < (w) - (4611686018427387904 % DV(w)), (u) <= 2 * (4611686018427387904 / DV(w))) )
+#endif

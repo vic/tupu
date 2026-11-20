@@ -1,0 +1,150 @@
+// Arithmetic family (vic/spec/rules.md 3): the exact result of every operation fits its type, a divisor is not zero,
+// a shift amount is below the width, a literal fits its type. Built on the order facts and intervals of bounds.dl.
+// Theory: Cousot-Cousot 1977 (interval abstract domain); the overflow tests are elementary integer arithmetic
+// (numbers.dl). A wrapping operation (U32.wrappingAdd, U64.mix) owes nothing and gives its result the bounds of
+// its type only: the extractor emits no operation row for it.
+// Mutants: MUTANT_SUBHIGH, MUTANT_SUBLOW, MUTANT_SUBORDER, MUTANT_SUBRESULT, MUTANT_MULHIGH, MUTANT_MULMIXED, MUTANT_DIVLOW,
+// MUTANT_DIVHIGH, MUTANT_QUOTLOW, MUTANT_SHIFTHIGH, MUTANT_SHIFTLOW, MUTANT_LITHIGH, MUTANT_LITLOW,
+// MUTANT_REMBELOW, MUTANT_REMLEQ, MUTANT_REMNEG, MUTANT_REMLOW, MUTANT_ANDLEQ, MUTANT_QUOTLEQ, MUTANT_QUOTNEG, MUTANT_QUOTNONNEG,
+// MUTANT_UPPERJOIN (cases/run.sh). Law (ruling S25): no join rule for upper/lower; result bounds never feed the bases.
+#ifndef STIGI_ARITH
+#define STIGI_ARITH
+#include "bounds.dl"
+
+.decl subtractExact(o: Operation)
+.decl multiplyExact(o: Operation)
+.decl divisorNonZero(o: Operation)
+.decl quotientExact(o: Operation)
+.decl shiftInRange(o: Operation)
+.decl literalFits(v: Value)
+
+// ---- subtract: a = x - y inside [l, h]. The upper end is hx - ly; the lower end is lx - hy, or 0 when y <= x ----
+.decl exactSub(a: Value)
+#ifdef MUTANT_SUBHIGH
+#define SUBHIGH(hx, ly, h) hx = hx, ly = ly, h = h
+#else
+#define SUBHIGH(hx, ly, h) DIFFLE(hx, ly, h)
+#endif
+#ifdef MUTANT_SUBLOW
+#define SUBINTERVAL(lx, hy, l) lx = lx, hy = hy, l = l
+#define SUBORDER(y, x, s, l) l = l
+#elif defined(MUTANT_SUBORDER)
+#define SUBINTERVAL(lx, hy, l) DIFFGE(lx, hy, l)
+#define SUBORDER(y, x, s, l) l <= 0
+#else
+#define SUBINTERVAL(lx, hy, l) DIFFGE(lx, hy, l)
+#define SUBORDER(y, x, s, l) leq(y, x, s), l <= 0
+#endif
+subtractExact(o) :- subtractOp(o, a, x, y, s), valueType(a, t), typeRange(t, l, h), upper(x, hx, s), lower(y, ly, s),
+  SUBHIGH(hx, ly, h), lower(x, lx, s), upper(y, hy, s), SUBINTERVAL(lx, hy, l).
+subtractExact(o) :- subtractOp(o, a, x, y, s), valueType(a, t), typeRange(t, l, h), upper(x, hx, s), lower(y, ly, s),
+  SUBHIGH(hx, ly, h), SUBORDER(y, x, s, l).
+exactSub(a) :- subtractOp(o, a, _, _, _), subtractExact(o).
+#ifndef MUTANT_SUBRESULT
+upper(a, hx - ly, s) :- subtractOp(o, a, x, y, s0), subtractExact(o), dom(s, s0), valueType(a, t), typeRange(t, l, h),
+  upper(x, hx, s), lower(y, ly, s), DIFFLE(hx, ly, h), DIFFGE(hx, ly, l).
+lower(a, lx - hy, s) :- subtractOp(o, a, x, y, s0), subtractExact(o), dom(s, s0), valueType(a, t), typeRange(t, l, h),
+  lower(x, lx, s), upper(y, hy, s), DIFFLE(lx, hy, h), DIFFGE(lx, hy, l).
+#endif
+// x - y with y >= 0 is at most x; with y > 0 it is below x
+leq(a, x, s) :- subtractOp(_, a, x, y, _), exactSub(a), lower(y, ly, s), ly >= 0, scope(s).
+below(a, x, s) :- subtractOp(_, a, x, y, _), exactSub(a), lower(y, ly, s), ly > 0, scope(s).
+
+// ---- multiply: the four corner products are inside [l, h] (exact over the signs; division form inside MULLE) ----
+// The corner test is a relation over numbers: written inline, the disjunctions of the macros multiply into
+// hundreds of thousands of clauses (measured: Souffle did not finish the first case in 90 s).
+.decl mulCandidate(o: Operation, lx: number, hx: number, ly: number, hy: number, l: number, h: number)
+.decl cornerNeeded(p: number, q: number, l: number, h: number)
+.decl cornerFits(p: number, q: number, l: number, h: number)
+mulCandidate(o, lx, hx, ly, hy, l, h) :- multiplyOp(o, a, x, y, s), valueType(a, t), typeRange(t, l, h),
+  lower(x, lx, s), upper(x, hx, s), lower(y, ly, s), upper(y, hy, s).
+cornerNeeded(lx, ly, l, h) :- mulCandidate(_, lx, _, ly, _, l, h).
+cornerNeeded(lx, hy, l, h) :- mulCandidate(_, lx, _, _, hy, l, h).
+cornerNeeded(hx, ly, l, h) :- mulCandidate(_, _, hx, ly, _, l, h).
+cornerNeeded(hx, hy, l, h) :- mulCandidate(_, _, hx, _, hy, l, h).
+cornerFits(p, q, l, h) :- cornerNeeded(p, q, l, h), MULLE(p, q, h), MULGE(p, q, l).
+#ifdef MUTANT_MULHIGH
+multiplyExact(o) :- mulCandidate(o, lx, _, ly, hy, l, h), cornerFits(lx, ly, l, h), cornerFits(lx, hy, l, h).
+multiplyExact(o) :- mulCandidate(o, _, hx, ly, _, l, h), cornerFits(hx, ly, l, h).
+#elif defined(MUTANT_MULMIXED)
+multiplyExact(o) :- mulCandidate(o, lx, hx, ly, hy, l, h), cornerFits(lx, ly, l, h), cornerFits(hx, hy, l, h).
+#else
+multiplyExact(o) :- mulCandidate(o, lx, hx, ly, hy, l, h), cornerFits(lx, ly, l, h), cornerFits(lx, hy, l, h),
+  cornerFits(hx, ly, l, h), cornerFits(hx, hy, l, h).
+#endif
+
+// ---- quotient and remainder: the divisor is not zero; the quotient does not overflow (smallest value / -1) ----
+#ifdef MUTANT_DIVLOW
+// the negative side of the divisor range is the only one checked
+#else
+divisorNonZero(o) :- quotientOp(o, _, _, y, s), lower(y, ly, s), ly > 0.
+divisorNonZero(o) :- remainderOp(o, _, _, y, s), lower(y, ly, s), ly > 0.
+#endif
+#ifdef MUTANT_DIVHIGH
+#else
+divisorNonZero(o) :- quotientOp(o, _, _, y, s), upper(y, hy, s), hy < 0.
+divisorNonZero(o) :- remainderOp(o, _, _, y, s), upper(y, hy, s), hy < 0.
+#endif
+#ifdef MUTANT_QUOTLOW
+#else
+quotientExact(o) :- quotientOp(o, a, x, _, s), valueType(a, t), typeRange(t, l, _), lower(x, lx, s), lx > l.
+quotientExact(o) :- remainderOp(o, a, x, _, s), valueType(a, t), typeRange(t, l, _), lower(x, lx, s), lx > l.
+#endif
+#ifndef MUTANT_QUOTNONNEG
+quotientExact(o) :- quotientOp(o, _, _, y, s), lower(y, ly, s), ly > -1.
+quotientExact(o) :- remainderOp(o, _, _, y, s), lower(y, ly, s), ly > -1.
+#endif
+quotientExact(o) :- quotientOp(o, _, _, y, s), upper(y, hy, s), hy < -1.
+quotientExact(o) :- remainderOp(o, _, _, y, s), upper(y, hy, s), hy < -1.
+// results: x % d is below d for d > 0, and at most x for x >= 0; x / d is at most x for x >= 0 and d > 0
+#ifndef MUTANT_REMBELOW
+below(a, y, s) :- remainderOp(_, a, _, y, s0), dom(s, s0), lower(y, ly, s0), ly > 0.
+#endif
+// ruling S24: leq(result, x) and 0 <= result only with lower(x) >= 0 (C truncates toward zero)
+#ifdef MUTANT_REMNEG
+leq(a, x, s) :- remainderOp(_, a, x, y, s0), dom(s, s0), lower(y, ly, s0), ly > 0.
+#elif !defined(MUTANT_REMLEQ)
+leq(a, x, s) :- remainderOp(_, a, x, y, s0), dom(s, s0), lower(y, ly, s0), ly > 0, lower(x, lx, s0), lx >= 0.
+#endif
+#ifndef MUTANT_REMLOW
+lower(a, 0, s) :- remainderOp(_, a, x, y, s0), dom(s, s0), lower(y, ly, s0), ly > 0, lower(x, lx, s0), lx >= 0.
+#endif
+#ifdef MUTANT_QUOTNEG
+leq(a, x, s) :- quotientOp(_, a, x, y, s0), dom(s, s0), lower(y, ly, s0), ly > 0.
+#elif !defined(MUTANT_QUOTLEQ)
+leq(a, x, s) :- quotientOp(_, a, x, y, s0), dom(s, s0), lower(y, ly, s0), ly > 0, lower(x, lx, s0), lx >= 0.
+#endif
+// bitwiseAnd(x, c) with a literal c >= 0 is at most c
+#ifndef MUTANT_ANDLEQ
+leq(a, k, s) :- andOp(_, a, _, k, s0), lit(k, c), c >= 0, dom(s, s0).
+#endif
+
+// ---- shift and rotate: the amount is in [0, width) ----
+#ifdef MUTANT_SHIFTHIGH
+shiftInRange(o) :- shiftOp(o, _, _, y, s), lower(y, ly, s), ly >= 0.
+#elif defined(MUTANT_SHIFTLOW)
+shiftInRange(o) :- shiftOp(o, _, x, y, s), valueType(x, t), typeWidth(t, w), upper(y, hy, s), hy < w.
+#else
+shiftInRange(o) :- shiftOp(o, _, x, y, s), valueType(x, t), typeWidth(t, w), upper(y, hy, s), hy < w, lower(y, ly, s), ly >= 0.
+#endif
+
+// ---- literal: the value is inside the range of its type ----
+#ifdef MUTANT_LITHIGH
+literalFits(v) :- lit(v, n), valueType(v, t), typeRange(t, l, _), l <= n.
+#elif defined(MUTANT_LITLOW)
+literalFits(v) :- lit(v, n), valueType(v, t), typeRange(t, _, h), n <= h.
+#else
+literalFits(v) :- lit(v, n), valueType(v, t), typeRange(t, l, h), l <= n, n <= h.
+#endif
+
+// MUTANT_UPPERJOIN: the forbidden join rule of ruling S25 (a merged value takes the bound of one input)
+#ifdef MUTANT_UPPERJOIN
+upper(p, h, j) :- phi(p, _, _, b, sb, j), upper(b, h, sb).
+#endif
+cleared(o, "overflow-unproved") :- subtractExact(o).
+cleared(o, "overflow-unproved") :- multiplyExact(o).
+cleared(o, "overflow-unproved") :- quotientExact(o).
+cleared(o, "divisor-unproved") :- divisorNonZero(o).
+cleared(o, "shift-unproved") :- shiftInRange(o).
+cleared(v, "literal-out-of-range") :- literalFits(v).
+#endif

@@ -1,0 +1,32 @@
+# Capability family cases (sourced by run.sh; vic/spec/rules.md 6). Expected rows are in expected.txt.
+# Capability File: states Open, Closed; start Open; stop Closed; read: Open -> Open; close: Open -> Closed.
+cq() { verdict capabilities "$1" "${2:-}" capabilities; }
+cap() { mk "$1"; f scope R; f capabilityOf 'c File'; f startState 'File Open'; f stopState 'File Closed'; f stateOf 'File Open' 'File Closed'
+  f entryState 'read Open' 'close Open'; f exitState 'read Open' 'close Closed'; f entry p1; }
+cap walkOk; f next 'p1 p2' 'p2 p3'; f handleRange 'c p1 p3'; f operationCall 'o1 c read p1' 'o2 c close p2'
+cap afterClose; f next 'p1 p2' 'p2 p3'; f handleRange 'c p1 p3'; f operationCall 'o1 c close p1' 'o2 c read p2'
+cap notEnded; f next 'p1 p2'; f handleRange 'c p1 p2'; f operationCall 'o1 c read p1'
+cap branchMixed; f next 'p1 pa' 'p1 pb' 'pa pj' 'pb pj'; f join pj; f handleRange 'c p1 pj'; f operationCall 'o1 c close pa'
+cap branchSame; f next 'p1 pa' 'p1 pb' 'pa pj' 'pb pj'; f join pj; f handleRange 'c p1 pj'; f operationCall 'o1 c close pa' 'o2 c close pb'
+cap loopOk; f next 'p1 h' 'h b' 'b h' 'h x'; f loopHead h; f handleRange 'c p1 x'; f operationCall 'ob c read b' 'ox c close x'
+cap loopMixed; f next 'p1 h' 'h b' 'b h' 'h x'; f loopHead h; f handleRange 'c p1 x'; f operationCall 'ob c close b' 'ox c close x'
+mk providers; f capabilityOf 'cf File' 'cn Net'; f needsCapability 'okFile File' 'noProv File' 'two File' 'two Net'; f provider 'okFile cf' 'two cf'
+mk unknownState; f stateOf 'File Open'; f stateRef 'a1 File Open' 'a2 File Opn'
+mk capValue; f capabilityValueUse 'a1 v Row' 'a2 v Argument' 'a3 v Store' 'a4 v Return'
+mk handlePlace; f handleSite 'h1 Top' 'h2 Nested'
+# facts.md 6: not (close(c1), at(c2, Open)); c1 has no states, close is the operation `drop` of c1
+dn() { cap "$1"; f capabilityOf 'c1 Other'; f denialAtom 'd1 k1' 'd1 k2'; f denyOperation 'd1 k1 c1 drop'; f denyState 'd1 k2 c Open'; f denialRange 'd1 p2'; }
+dn denyAtViolated; f next 'p1 p2' 'p2 p3'; f handleRange 'c p1 p3'; f operationCall 'o1 c1 drop p2' 'o3 c close p3'
+dn denyAtOk; f next 'p1 p2' 'p2 p3'; f handleRange 'c p1 p3'; f operationCall 'o0 c close p1' 'o1 c1 drop p2'
+for x in walkOk afterClose notEnded branchMixed branchSame loopOk loopMixed providers unknownState capValue handlePlace denyAtViolated denyAtOk; do cq $x; done
+cq walkOk -MMUTANT_NOCARRY
+cq walkOk -MMUTANT_NOFLOW
+cq loopMixed -MMUTANT_MIXEDOFF
+cq branchMixed -MMUTANT_BRANCHOFF
+cq loopMixed -MMUTANT_LOOPOFF
+cq branchMixed -MMUTANT_ENDANY
+cq providers -MMUTANT_ANYPROVIDER
+cq unknownState -MMUTANT_STATEREFOFF
+cq capValue -MMUTANT_CAPVALUEOFF
+cq handlePlace -MMUTANT_HANDLEOFF
+cq denyAtViolated -MMUTANT_DENYATOFF

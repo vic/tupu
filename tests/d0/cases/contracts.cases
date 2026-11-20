@@ -1,0 +1,56 @@
+# Contracts family cases (sourced by run.sh; vic/spec/rules.md 4, rulings S21). Expected rows are in expected.txt.
+c() { verdict contracts "$1" "${2:-}" ${3:-contracts}; }
+# a def whose only content is a call that owes a callee precondition (proved by a credit): no fact of its own
+fm() { mk "$1"; f scope R; f value x y; f baseLeq 'x y R'; f operationOf 'o1 i1'; f instanceOf 'i1 u1'; f leqOwed 'o1 x y R precondition-unproved'; }
+fm factsCallOnly
+fm factsExit; f statesFact 'u1 Exit'
+fm factsAssertion; f statesFact 'u1 Assertion'
+mk factsTest; f scope R; f operationOf 'o1 ti'; f instanceOf 'ti t1'; f statesFact 't1 Expectation'
+mk factsLiteral; f scope R; f value k; f lit 'k 5'; f valueType 'k U8'; f typeRange 'U8 0 255'
+mk factsTwoUnits; f scope R; f operationOf 'o1 i1' 'o2 i2'; f instanceOf 'i1 u1' 'i2 u2'; f statesFact 'u2 Entry'
+# one generic def with two instances: one verdict per unit, not per instance
+mk factsTwoInstances; f scope R; f operationOf 'o1 i1' 'o2 i2'; f instanceOf 'i1 u1' 'i2 u1'; f statesFact 'u1 Exit'
+mk factsTwoInstancesNone; f scope R; f operationOf 'o1 i1' 'o2 i2'; f instanceOf 'i1 u1' 'i2 u1'
+for x in factsCallOnly factsExit factsAssertion factsTest factsTwoUnits; do c $x; done; c factsLiteral '' contractsarith; for x in factsTwoInstances factsTwoInstancesNone; do c $x; done
+c factsCallOnly -MMUTANT_FROMOWED
+
+# ---- owed order facts: precondition, refinement, exit, assertion, invariant (rules.md 4) ----
+# the shapes of facts.md 8: guard credit, callee exit credit, stale bound, user fact, credit scope
+ow() { mk "$1"; f scope R A B; f parent 'A R' 'B R'; f value i n r s; }
+ow preGuard; f baseBelow 'i n A'; f belowOwed 'call i n A precondition-unproved'
+ow preMissing; f belowOwed 'call i n A precondition-unproved'
+ow preSibling; f baseBelow 'i n B'; f belowOwed 'call i n A precondition-unproved'
+ow preTwoRows; f baseBelow 'i n A'; f belowOwed 'call i n A precondition-unproved' 'call r n A precondition-unproved'
+ow preStale; f baseBelow 'i n A'; f belowOwed 'call s n A precondition-unproved'
+ow preLeqOnly; f baseLeq 'i n A'; f belowOwed 'call i n A precondition-unproved'
+ow calleeExit; f baseLeq 'r i A'; f leqOwed 'ex r i A exit-unproved'
+ow exitMissing; f leqOwed 'ex r i A exit-unproved'
+ow refineOk; f baseBelow 'i n A'; f belowOwed 'conv i n A refinement-unproved'
+ow refineMissing; f belowOwed 'conv i n A refinement-unproved'
+ow assertOk; f baseLeq 'i n A'; f leqOwed 'asrt i n A assertion-unproved'
+ow assertMissing; f leqOwed 'asrt i n A assertion-unproved'
+for x in preGuard preMissing preSibling preTwoRows preStale preLeqOnly calleeExit exitMissing refineOk refineMissing assertOk assertMissing; do c $x; done
+c preSibling -MMUTANT_DOMOFF
+c preTwoRows -MMUTANT_ANYROW
+c preLeqOnly -MMUTANT_BELOWASLEQ
+
+# ---- denials ----
+# d1 forbids "close(database) and at(statement)": here both atoms are operation atoms of one point
+dn() { mk "$1"; f scope R; f denialAtom 'd1 k1' 'd1 k2'; f denyOperation 'd1 k1 db close' 'd1 k2 st step'; }
+dn denyRespected; f denialRange 'd1 p1'; f operationCall 'o1 db close p1'
+dn denyViolated; f denialRange 'd1 p1'; f operationCall 'o1 db close p1' 'o2 st step p1'
+dn denyOutOfRange; f denialRange 'd1 p1' 'd2 p2'; f denialAtom 'd2 k3'; f denyOperation 'd2 k3 db close'; f operationCall 'o1 db close p1'
+dn denyTwoDenials; f denialRange 'd1 p1' 'd2 p1'; f denialAtom 'd2 k3'; f denyOperation 'd2 k3 db close'; f operationCall 'o1 db close p1'
+mk denyUserAtom; f scope R; f denialAtom 'd1 k1' 'd1 k2'; f denyOperation 'd1 k1 db close'; f denyUser 'd1 k2 p1'; f denialRange 'd1 p1'; f operationCall 'o1 db close p1'
+for x in denyRespected denyViolated denyOutOfRange denyTwoDenials denyUserAtom; do c $x; done
+c denyRespected -MMUTANT_DENYANY
+c denyOutOfRange -MMUTANT_DENYRANGE
+c denyUserAtom -MMUTANT_USERDENIAL
+
+# ---- relation arity ----
+ar() { mk "$1"; f scope R; f relationColumns 'below 2' 'at 2'; }
+ar arityOk; f atomUse 'a1 below 2'
+ar arityTooFew; f atomUse 'a1 below 1'
+ar arityTooMany; f atomUse 'a1 at 3'
+for x in arityOk arityTooFew arityTooMany; do c $x; done
+c arityTooFew -MMUTANT_ARITYLOW

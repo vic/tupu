@@ -1,0 +1,24 @@
+# Stack family cases (sourced by run.sh; vic/spec/rules.md 8, memory.md 7). Expected rows are in expected.txt.
+kv() { verdict stack "$1" "${2:-}" stack; }
+sk() { mk "$1"; }
+# call c: instance d calls e with call kind k through operation o
+call() { f operationOf "$1 $2"; f callOf "$1 $3 $4"; f statesFact "u$2 Exit"; }
+sk stkChain; f instanceOf 'a ua' 'b ub' 'c uc'; f rootInstance a; f stackBudget 1000; f frameBytes 'a 100' 'b 100' 'c 100'; call o1 a b Normal; call o2 b c Normal
+sk stkOver; f instanceOf 'a ua' 'b ub' 'c uc'; f rootInstance a; f stackBudget 250; f frameBytes 'a 100' 'b 100' 'c 100'; call o1 a b Normal; call o2 b c Normal
+sk stkDiamondOk; f instanceOf 'a ua' 'b ub' 'c uc' 'd ud'; f rootInstance a; f stackBudget 70; f frameBytes 'a 10' 'b 20' 'c 50' 'd 5'; call o1 a b Normal; call o2 a c Normal; call o3 b d Normal; call o4 c d Normal
+sk stkDiamondOver; f instanceOf 'a ua' 'b ub' 'c uc' 'd ud'; f rootInstance a; f stackBudget 60; f frameBytes 'a 10' 'b 20' 'c 50' 'd 5'; call o1 a b Normal; call o2 a c Normal; call o3 b d Normal; call o4 c d Normal
+sk stkRecOk; f instanceOf 'a ua' 'f uf'; f rootInstance a; f stackBudget 600; f frameBytes 'a 5' 'f 50'; f depthBound 'f 10'; call o1 a f Normal; call o2 f f Normal
+sk stkRecOver; f instanceOf 'a ua' 'f uf'; f rootInstance a; f stackBudget 500; f frameBytes 'a 5' 'f 50'; f depthBound 'f 10'; call o1 a f Normal; call o2 f f Normal
+sk stkUnbounded; f instanceOf 'a ua' 'f uf'; f rootInstance a; f stackBudget 1000; f frameBytes 'a 5' 'f 50'; call o1 a f Normal; call o2 f f Normal
+sk stkTail; f instanceOf 'a ua' 'f uf'; f rootInstance a; f stackBudget 100; f frameBytes 'a 5' 'f 50'; call o1 a f Normal; call o2 f f Tail
+sk stkMutualOk; f instanceOf 'r ur' 'f uf' 'g ug'; f rootInstance r; f stackBudget 100; f frameBytes 'r 5' 'f 10' 'g 20'; f depthBound 'f 3' 'g 3'; call o1 r f Normal; call o2 f g Normal; call o3 g f Normal
+sk stkMutualOver; f instanceOf 'r ur' 'f uf' 'g ug'; f rootInstance r; f stackBudget 90; f frameBytes 'r 5' 'f 10' 'g 20'; f depthBound 'f 3' 'g 3'; call o1 r f Normal; call o2 f g Normal; call o3 g f Normal
+sk stkUnframed; f instanceOf 'a ua' 'b ub'; f rootInstance a; f stackBudget 1000; f frameBytes 'a 10'; call o1 a b Normal
+for x in stkChain stkOver stkDiamondOk stkDiamondOver stkRecOk stkRecOver stkUnbounded stkTail stkMutualOk stkMutualOver stkUnframed; do kv $x; done
+kv stkOver -MMUTANT_BUDGETOFF
+kv stkUnbounded -MMUTANT_CYCLEOFF
+kv stkRecOk -MMUTANT_BOUNDOFF
+kv stkRecOver -MMUTANT_LIMITONE
+kv stkTail -MMUTANT_TAILOFF
+kv stkUnframed -MMUTANT_UNFRAMEDOFF
+kv stkUnbounded -MMUTANT_UNBOUNDREACHOFF

@@ -1,0 +1,21 @@
+# Order axioms and transitivity of bounds.dl, one case and one mutant each (ruling S36). Run in the family `bounds` with arith.dl.
+bx() { verdict bounds "$1" "${2:-}" arith; }
+mk axRefl; types; V a U8; f leqOwed 'e a a R exit-unproved'
+mk axU64Zero; types; V z U8 0; V x U8; f u64 x; f leqOwed 'e z x R exit-unproved'
+mk axLitLeq; types; V a U8 5; V b U8 5; f leqOwed 'e a b R exit-unproved'
+mk axLitBelow; types; V i U8 2; V n U8 5; f indexRead 'rd i n R'
+mk axBelowLeq; types; V a U8; V b U8; f baseBelow 'a b R'; f leqOwed 'e a b R exit-unproved'
+mk axTransBL; types; V i U8; V m U8; V n U8; f baseBelow 'i m R'; f baseLeq 'm n R'; f indexRead 'rd i n R'
+mk axTransLB; types; V i U8; V m U8; V n U8; f baseLeq 'i m R'; f baseBelow 'm n R'; f indexRead 'rd i n R'
+mk axTransLL; types; V a U8; V b U8; V c U8; f baseLeq 'a b R' 'b c R'; f leqOwed 'e a c R exit-unproved'
+mk axSucc; types; V x U8; V b U8; V a U8; V k1 U8 1; f baseBelow 'x b R'; f addOp 'ad a x k1 R'; f leqOwed 'e a b R exit-unproved'
+for x in axRefl axU64Zero axLitLeq axLitBelow axBelowLeq axTransBL axTransLB axTransLL axSucc; do bx $x; done
+bx axRefl -MMUTANT_AX_REFL
+bx axU64Zero -MMUTANT_AX_U64ZERO
+bx axLitLeq -MMUTANT_AX_LITLEQ
+bx axLitBelow -MMUTANT_AX_LITBELOW
+bx axBelowLeq -MMUTANT_AX_BELOWLEQ
+bx axTransBL -MMUTANT_AX_TRANSBL
+bx axTransLB -MMUTANT_AX_TRANSLB
+bx axTransLL -MMUTANT_AX_TRANSLL
+bx axSucc -MMUTANT_AX_SUCC

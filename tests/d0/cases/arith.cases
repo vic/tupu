@@ -1,0 +1,151 @@
+# Arithmetic family cases (sourced by run.sh; vic/spec/rules.md 3). One scope R, model types U8, I8, U32, I64.
+# Shapes: corpus-intent 2 (index against a guard literal, 2^28 and 2^32) and fresh cases for overflow-unproved,
+# divisor-unproved, shift-unproved, literal-out-of-range. Expected rows are in expected.txt (written before the run).
+# F is the verdict function: `verdict arith CASE MUTANT arith`.
+a() { verdict arith "$1" "${2:-}" arith; }
+
+# ---- add ----
+mk addU8ok; types; V x U8; V k200 U8 200; V k50 U8 50; V a U8
+f baseBelow 'x k200 R'; f addOp 'addO a x k50 R'
+mk addU8over; types; V x U8; V k250 U8 250; V k50 U8 50; V a U8
+f baseBelow 'x k250 R'; f addOp 'addO a x k50 R'
+mk addI64max; types; V x I64; V k1 I64 1; V a I64
+f addOp 'addO a x k1 R'
+mk addI64guard; types; V x I64; V kmax I64 9223372036854775807; V k1 I64 1; V a I64
+f baseBelow 'x kmax R'; f addOp 'addO a x k1 R'
+mk addI64neg; types; V x I64; V km1 I64 -1; V a I64
+f addOp 'addO a x km1 R'
+mk addChain; types; V x U8; V k200 U8 200; V k50 U8 50; V k1 U8 1; V a U8; V b U8
+f baseBelow 'x k200 R'; f addOp 'addA a x k50 R' 'addB b a k1 R'
+
+# ---- index against a guard literal (the s4 width defect: a literal of 2^32 wrapped to 0) ----
+idx() { mk "$1"; types; V i I64; V n U32 5; V k I64 "$2"; f baseBelow 'i k R'; f indexRead 'rd i n R'; }
+idx guard2p32 4294967296
+idx guard2p28 268435456
+idx guard4 4
+idx guard5 5
+idx guard6 6
+
+# ---- subtract ----
+mk subOrder; types; V x U8; V y U8; V a U8
+f baseLeq 'y x R'; f subtractOp 'subO a x y R'
+mk subFree; types; V x U8; V y U8; V a U8
+f subtractOp 'subO a x y R'
+mk subI8ok; types; V x I8; V y I8; V a I8; V k0 I8 0; V k101 I8 101; V km20 I8 -20; V k20 I8 20
+f baseLeq 'k0 x R' 'km20 y R' 'y k20 R'; f baseBelow 'x k101 R'; f subtractOp 'subO a x y R'
+mk subI8over; types; V x I8; V y I8; V a I8; V k0 I8 0; V k101 I8 101; V km30 I8 -30; V k20 I8 20
+f baseLeq 'k0 x R' 'km30 y R' 'y k20 R'; f baseBelow 'x k101 R'; f subtractOp 'subO a x y R'
+mk subI64min; types; V x I64; V k1 I64 1; V a I64
+f subtractOp 'subO a x k1 R'
+mk subChain; types; V x I8; V k0 I8 0; V k51 I8 51; V k10 I8 10; V k80 I8 80; V a I8; V b I8
+f baseLeq 'k0 x R'; f baseBelow 'x k51 R'; f subtractOp 'subO a x k10 R'; f addOp 'addB b a k80 R'
+
+# ---- multiply ----
+mul() { mk "$1"; types; V x "$2"; V y "$2"; V a "$2"; }
+mul mulU8ok U8; V k16 U8 16; V k18 U8 18
+f baseBelow 'x k16 R' 'y k18 R'; f multiplyOp 'mulO a x y R'
+mul mulU8over U8; V k16 U8 16; V k19 U8 19
+f baseBelow 'x k16 R' 'y k19 R'; f multiplyOp 'mulO a x y R'
+mul mulI8mixed I8; V km100 I8 -100; V k0 I8 0; V k100 I8 100
+f baseLeq 'km100 x R' 'x k0 R' 'k0 y R' 'y k100 R'; f multiplyOp 'mulO a x y R'
+mul mulI8ok I8; V km8 I8 -8; V k7 I8 7
+f baseLeq 'km8 x R' 'x k7 R' 'km8 y R' 'y k7 R'; f multiplyOp 'mulO a x y R'
+mul mulI64edge I64; V k0 I64 0; V k1 I64 1
+f baseLeq 'k0 y R' 'y k1 R'; f multiplyOp 'mulO a x y R'
+mul mulI64over I64; V km1 I64 -1; V k1 I64 1
+f baseLeq 'km1 y R' 'y k1 R'; f multiplyOp 'mulO a x y R'
+
+# ---- quotient and remainder ----
+div() { mk "$1"; types; V x "$2"; V y "$2"; V a "$2"; }
+div divU8zero U8
+f quotientOp 'divO a x y R'
+div divU8pos U8; V k1 U8 1
+f baseLeq 'k1 y R'; f quotientOp 'divO a x y R'
+div divI8neg I8; V km2 I8 -2
+f baseLeq 'y km2 R'; f quotientOp 'divO a x y R'
+div quotI8min I8; V km1 I8 -1
+f baseLeq 'y km1 R'; f quotientOp 'divO a x y R'
+div quotI8ok I8; V km1 I8 -1; V km127 I8 -127
+f baseLeq 'y km1 R' 'km127 x R'; f quotientOp 'divO a x y R'
+
+# ---- shift and rotate ----
+sh() { mk "$1"; types; V x "$2"; V y "$2"; V a "$2"; V kw "$2" "$3"; f baseBelow 'y kw R'; f shiftOp 'shO a x y R'; }
+sh shiftU32ok U32 32
+sh shiftU32wide U32 33
+mk shiftU32free; types; V x U32; V y U32; V a U32
+f shiftOp 'shO a x y R'
+sh shiftI8neg I8 8
+sh shiftI8ok I8 8; V k0 I8 0
+f baseLeq 'k0 y R'
+
+# ---- literals ----
+mk litOk; types; V k255 U8 255; V km128 I8 -128; V k127 I8 127; V kmin I64 -9223372036854775808; V kmax I64 9223372036854775807
+mk litHigh; types; V k256 U8 256
+mk litLow; types; V km1 U8 -1
+mk litI8; types; V k128 I8 128
+
+# ---- results of remainder, quotient and bitwiseAnd, and a wrapping result ----
+mk remIndex; types; V x U32; V n U32 10; V a U32
+f remainderOp 'remO a x n R'; f indexRead 'rd a n R'
+mk remLeq; types; V x U32; V y U32; V a U32; V k1 U32 1
+f baseLeq 'k1 y R'; f remainderOp 'remO a x y R'; f leqOwed 'ex a x R exit-unproved'
+mk remSigned; types; V x I8; V y I8; V a I8; V k1 I8 1
+f baseLeq 'k1 y R'; f remainderOp 'remO a x y R'; f leqOwed 'ex a x R exit-unproved'
+mk quotLeq; types; V x U32; V y U32; V a U32; V k1 U32 1
+f baseLeq 'k1 y R'; f quotientOp 'divO a x y R'; f leqOwed 'ex a x R exit-unproved'
+mk andIndex; types; V x U8; V k7 U8 7; V n U8 8; V a U8
+f andOp 'andO a x k7 R'; f indexRead 'rd a n R'
+mk andWide; types; V x U8; V k9 U8 9; V n U8 8; V a U8
+f andOp 'andO a x k9 R'; f indexRead 'rd a n R'
+mk wrapIndex; types; V w U32; V n U32 5
+f indexRead 'rd w n R'
+
+for c in addU8ok addU8over addI64max addI64guard addI64neg addChain guard2p32 guard2p28 guard4 guard5 guard6 \
+  subOrder subFree subI8ok subI8over subI64min subChain mulU8ok mulU8over mulI8mixed mulI8ok mulI64edge mulI64over \
+  divU8zero divU8pos divI8neg quotI8min quotI8ok shiftU32ok shiftU32wide shiftU32free shiftI8neg shiftI8ok \
+  litOk litHigh litLow litI8 remIndex remLeq remSigned quotLeq andIndex andWide wrapIndex; do a $c; done
+# mutants: each must flip the verdict of the case it is run on
+a addI64max -MMUTANT_PLAINADD
+a addI64max -MMUTANT_ADDHIGH
+a addI64neg -MMUTANT_ADDLOW
+a addChain -MMUTANT_ADDRESULT
+a subI8over -MMUTANT_SUBHIGH
+a subFree -MMUTANT_SUBLOW
+a subFree -MMUTANT_SUBORDER
+a subChain -MMUTANT_SUBRESULT
+a mulU8over -MMUTANT_MULHIGH
+a mulI8mixed -MMUTANT_MULMIXED
+a divU8pos -MMUTANT_DIVLOW
+a divI8neg -MMUTANT_DIVHIGH
+a quotI8ok -MMUTANT_QUOTLOW
+a shiftU32wide -MMUTANT_SHIFTHIGH
+a shiftI8neg -MMUTANT_SHIFTLOW
+a litHigh -MMUTANT_LITHIGH
+a litLow -MMUTANT_LITLOW
+a remIndex -MMUTANT_REMBELOW
+a remLeq -MMUTANT_REMLEQ
+a quotLeq -MMUTANT_QUOTLEQ
+a andIndex -MMUTANT_ANDLEQ
+
+# ---- rulings S22 to S25 ----
+mk negMin; types; V x I8; V k0 I8 0; V a I8
+f subtractOp 'negO a k0 x R'
+mk negOk; types; V x I8; V k0 I8 0; V km127 I8 -127; V a I8
+f baseLeq 'km127 x R'; f subtractOp 'negO a k0 x R'
+mk addChainBad; types; V x U8; V k200 U8 200; V k50 U8 50; V k10 U8 10; V a U8; V b U8
+f baseBelow 'x k200 R'; f addOp 'addA a x k50 R' 'addB b a k10 R'
+mk quotSigned; types; V x I8; V y I8; V a I8; V k1 I8 1
+f baseLeq 'k1 y R'; f quotientOp 'divO a x y R'; f leqOwed 'ex a x R exit-unproved'
+mk remShift; types; V x I8; V z I8; V r I8; V a I8; V k0 I8 0; V k8 I8 8
+f baseLeq 'k0 x R'; f remainderOp 'remO r x k8 R'; f shiftOp 'shO a z r R'
+mk addJoin; types; V a U8; V b U8; V p U8; V c U8; V k10 U8 10; V k1 U8 1
+f scope A B J; f parent 'A R' 'B R' 'J R'; f baseLeq 'b k10 B'; f phi 'p a A b B J'; f addOp 'addO c p k1 J'
+mk loopRows; types; V i0 I64 0; V i1 I64; V i2 I64; V k1 I64 1; V kn I64 1000
+f scope H B L; f parent 'H R' 'B H' 'L B'; f phi 'i1 i0 R i2 L H'; f addOp 'addO i2 i1 k1 B'; f baseBelow 'i1 kn B'
+for c in negMin negOk addChainBad quotSigned remShift addJoin; do a $c; done
+verdict rows loopRows '' rows
+a quotSigned -MMUTANT_QUOTNEG
+a remSigned -MMUTANT_REMNEG
+a remShift -MMUTANT_REMLOW
+a addJoin -MMUTANT_UPPERJOIN
+a divU8pos -MMUTANT_QUOTNONNEG

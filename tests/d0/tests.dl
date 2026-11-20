@@ -1,0 +1,60 @@
+// Tests family (vic/spec/rules.md 9, door.md 5): Tests and NegTests. A NegTest is admitted only when the codes of its
+// reject rows equal the codes it expects, each code has one subject, and a rule unit clears each expected code (T2).
+// Theory: none (direct joins of the door's relations, T9).
+// Mutants (cases/tests.cases): MUTANT_TESTOFF, MUTANT_DIFFEROFF, MUTANT_LEAKOFF, MUTANT_MISSINGOFF, MUTANT_EXTRAOFF,
+// MUTANT_MANYOFF, MUTANT_NORULEOFF, MUTANT_NOEXPECTOFF.
+#ifndef STIGI_TESTS
+#define STIGI_TESTS
+#include "schema.dl"
+#include "names.dl"
+
+#ifdef MUTANT_TESTOFF
+cleared(t, "test-failed") :- unit(t, "Test").
+#else
+cleared(t, "test-failed") :- testGot(t, v), testWant(t, v).
+#endif
+#ifdef MUTANT_DIFFEROFF
+cleared(t, "test-evaluator-differs") :- emittedRun(t).
+#else
+cleared(t, "test-evaluator-differs") :- emittedRun(t), testGot(t, v), emittedGot(t, v).
+#endif
+.decl extraCap(t: Unit)
+#ifdef MUTANT_LEAKOFF
+extraCap(t) :- testRow(t, _), 1 = 2.
+#else
+extraCap(t) :- testRow(t, k), k != "Stigi.Test".
+#endif
+cleared(t, "test-leaks-capability") :- unit(t, "Test"), !extraCap(t).
+.decl missingCode(n: Unit, c: Code)
+.decl extraCode(n: Unit, c: Code)
+.decl manySubject(n: Unit, c: Code)
+.decl noRule(n: Unit, c: Code)
+#ifdef MUTANT_MISSINGOFF
+missingCode(n, c) :- negExpect(n, c), 1 = 2.
+#else
+missingCode(n, c) :- negExpect(n, c), !negRejects(n, _, c).
+#endif
+#ifdef MUTANT_EXTRAOFF
+extraCode(n, c) :- negRejects(n, _, c), 1 = 2.
+#else
+extraCode(n, c) :- negRejects(n, _, c), !negExpect(n, c).
+#endif
+#ifdef MUTANT_MANYOFF
+manySubject(n, c) :- negRejects(n, _, c), 1 = 2.
+#else
+manySubject(n, c) :- negRejects(n, s, c), negRejects(n, t, c), s != t.
+#endif
+#ifdef MUTANT_NORULEOFF
+noRule(n, c) :- negExpect(n, c), 1 = 2.
+#else
+noRule(n, c) :- negExpect(n, c), !clearsRule(_, c).
+#endif
+#ifdef MUTANT_NOEXPECTOFF
+cleared(n, "negtest-not-rejected") :- unit(n, "NegTest"), !missingCode(n, _).
+#else
+cleared(n, "negtest-not-rejected") :- unit(n, "NegTest"), negExpect(n, _), !missingCode(n, _).
+#endif
+cleared(n, "negtest-wrong-code") :- unit(n, "NegTest"), !extraCode(n, _).
+cleared(n, "negtest-form") :- unit(n, "NegTest"), !manySubject(n, _).
+cleared(n, "negtest-without-rule") :- unit(n, "NegTest"), !noRule(n, _).
+#endif

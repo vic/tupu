@@ -1,0 +1,8 @@
+// The wrap that a 32-bit Souffle does silently: 2147483647 + 1. With 64-bit numbers the check rejects the sum;
+// with 32-bit numbers the sum wraps to -2147483648 and `accepted` holds. (The same Souffle refuses a literal of the
+// program text or of a facts file that is 2^31 or more instead of wrapping it: experiment X1-e.)
+.decl sum(n: number)
+.decl accepted(n: number)
+sum(n) :- n = 2147483647 + 1.
+accepted(n) :- sum(n), n <= 2147483647.
+.output accepted(IO=stdout)

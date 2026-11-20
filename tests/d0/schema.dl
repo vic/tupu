@@ -1,0 +1,291 @@
+// stigi fact schema and the central gate, as a Souffle program (ruling SOUFFLE FIRST).
+// This file is normative for the relations it declares; vic/spec/fact-schema.md explains each one.
+// Souffle numbers must be 64-bit (build with SOUFFLE_DOMAIN_64BIT, souffle64.nix); see cases/run.sh for the width probe.
+#ifndef STIGI_SCHEMA
+#define STIGI_SCHEMA
+
+.type Value <: symbol       // an SSA value or a length term of one def instance
+.type Scope <: symbol       // a node of the dominator tree of one def instance
+.type Point <: symbol       // a program point of one def instance
+.type Region <: symbol      // a handle of Stigi.Region
+.type Operation <: symbol   // one executable operation of a def instance
+.type Unit <: symbol          // a named unit of the image
+.type Instance <: symbol      // a def or handler operation with its type arguments and handler tuple
+.type TypeName <: symbol    // a normal type
+.type FactForm <: symbol      // Entry, Exit, Assertion, Invariant, Refinement, Expectation (ruling S21)
+.type Atom <: symbol          // one atom written in a fact group, a rule or a denial
+.type RelationName <: symbol  // a relation of the image
+.type Expression <: symbol    // a node of the checked IR that produces a value
+.type OperationKind <: symbol // a case of Stigi.OperationKind, closed enum
+.type Compare <: symbol       // Less, LessOrEqual, Equal, NotEqual
+.type State <: symbol         // a state name of a capability
+.type UseRole <: symbol       // Row, Argument, Store, Return: how a capability value is used
+.type Placement <: symbol     // Top, Nested: where a handle statement stands
+.type Handle = Region | Value  // what a handle scope serves: a region or a capability instance
+.type CallKind <: symbol       // Tail, Normal
+.type RowKind <: symbol       // one case per input relation: the rows an operation kind must emit (ruling S37)
+.type AddressRole <: symbol   // Call, Store, Return: how the address of a handler state is used
+.type Subject = Operation | Value | Unit | Point | Atom | Expression | Instance | TypeName   // what owes
+.type Code <: symbol        // a case of Stigi.Code, in its kebab-case form
+
+// ---- the central gate (ruling S7): the extractor says what is owed, rules only clear ----
+// owes, cleared and reject are sinks: no rule body reads them. This keeps every family stratifiable.
+.decl owes(subject: Subject, code: Code)
+.decl cleared(subject: Subject, code: Code)
+.decl reject(subject: Subject, code: Code)
+reject(s, c) :- owes(s, c), !cleared(s, c).
+#ifdef COVER
+.output owes(IO=stdout)
+.output cleared(IO=stdout)
+#endif
+.output reject(IO=stdout)
+
+// ---- flow facts (producer: the fact extractor) ----
+.decl value(x: Value)
+.decl scope(s: Scope)
+.decl parent(child: Scope, up: Scope)                   // immediate dominator
+.decl lit(x: Value, n: number)                          // the value is this literal
+.decl u64(x: Value)                                     // the value has type U64 (never negative)
+.decl valueType(x: Value, t: TypeName)                  // producer: the type checker
+.decl typeRange(t: TypeName, low: number, high: number) // table rows of Stigi.Arithmetic (exact integers)
+.decl typeWidth(t: TypeName, bits: number)              // table rows of Stigi.Arithmetic: the width of an integer type
+.decl addOp(o: Operation, a: Value, x: Value, y: Value, s: Scope)       // a = x + y at scope s (a literal operand is a lit value)
+.decl subtractOp(o: Operation, a: Value, x: Value, y: Value, s: Scope)  // a = x - y (negation is 0 - x)
+.decl multiplyOp(o: Operation, a: Value, x: Value, y: Value, s: Scope)  // a = x * y
+.decl quotientOp(o: Operation, a: Value, x: Value, y: Value, s: Scope)  // a = x / y
+.decl remainderOp(o: Operation, a: Value, x: Value, y: Value, s: Scope) // a = x % y
+.decl shiftOp(o: Operation, a: Value, x: Value, y: Value, s: Scope)     // a = x shifted or rotated by the amount y
+.decl andOp(o: Operation, a: Value, x: Value, y: Value, s: Scope)       // a = bitwiseAnd(x, y)
+.decl phi(p: Value, a: Value, sa: Scope, b: Value, sb: Scope, j: Scope)   // p merges a (edge scope sa) and b (sb) at j
+.decl baseBelow(x: Value, y: Value, s: Scope)           // credit: x < y from scope s on
+.decl baseLeq(x: Value, y: Value, s: Scope)             // credit: x <= y from scope s on
+.decl indexRead(o: Operation, i: Value, n: Value, s: Scope)          // element i of an object of length n
+.decl leqOwed(o: Operation, x: Value, y: Value, s: Scope, c: Code)   // a stated lessOrEqual fact to prove
+.decl belowOwed(o: Operation, x: Value, y: Value, s: Scope, c: Code)  // a stated below fact to prove
+.input value, scope, parent, lit, u64, valueType, typeRange, typeWidth
+.input addOp, subtractOp, multiplyOp, quotientOp, remainderOp, shiftOp, andOp
+.input phi, baseBelow, baseLeq, indexRead, leqOwed, belowOwed
+.decl instanceOf(i: Instance, u: Unit)                 // producer: the type checker (the one producer of unit ownership)
+.decl operationOf(o: Operation, i: Instance)            // the operation stands in this instance; exactly one row per operation (S26)
+.decl statesFact(u: Unit, form: FactForm)               // the unit's own text holds a fact group on a safety relation (S21)
+.input instanceOf, operationOf, statesFact
+
+// ---- memory facts (producer: the fact extractor) ----
+.decl next(p: Point, q: Point)                          // control-flow edge
+.decl exit(p: Point)
+.decl alloc(v: Value, r: Region, p: Point)              // the object v is allocated in r at p
+.decl arena(r: Region)
+.decl heap(r: Region)
+.decl use(p: Point, v: Value)                           // p reads v through some alias
+.decl move(p: Point, v: Value, c: Value)                // v moves into container c at p
+.input next, exit, alloc, arena, heap, use, move
+
+// ---- what each operation owes (this block stands for the extractor's contract) ----
+owes(o, "index-unproved") :- indexRead(o, _, _, _).
+owes(o, "overflow-unproved") :- addOp(o, _, _, _, _).
+owes(o, "overflow-unproved") :- subtractOp(o, _, _, _, _).
+owes(o, "overflow-unproved") :- multiplyOp(o, _, _, _, _).
+owes(o, "overflow-unproved") :- quotientOp(o, _, _, _, _).     // the smallest value divided by -1 (spec gap G2)
+owes(o, "overflow-unproved") :- remainderOp(o, _, _, _, _).    // the same for the remainder (spec gap G2)
+owes(o, "divisor-unproved") :- quotientOp(o, _, _, _, _).
+owes(o, "divisor-unproved") :- remainderOp(o, _, _, _, _).
+owes(o, "shift-unproved") :- shiftOp(o, _, _, _, _).
+owes(v, "literal-out-of-range") :- lit(v, _).
+owes(o, c) :- leqOwed(o, _, _, _, c).
+owes(o, c) :- belowOwed(o, _, _, _, c).
+owes(u, "facts-missing") :- instanceOf(i, u), operationOf(_, i).     // rulings S21, S26
+
+// ---- facts: atoms, denials, operation calls (producer: the fact extractor) ----
+.decl atomUse(a: Atom, rel: RelationName, terms: number)            // an atom written with this many terms
+.decl relationColumns(rel: RelationName, columns: number)           // the relation declares this many columns
+.decl denialRange(d: Atom, p: Point)                                // the denial d is in force at the point p (to the end of its block)
+.decl denialAtom(d: Atom, k: Atom)                                  // k is one atom of the denial d
+.decl denyOperation(d: Atom, k: Atom, c: Value, op: Atom)           // atom k of d is the operation op of the capability c
+.decl denyUser(d: Atom, k: Atom, p: Point)                          // atom k of d is a user relation fact recorded at p
+.decl operationCall(o: Operation, c: Value, op: Atom, p: Point)     // the operation o calls op of the capability c at p
+.input atomUse, relationColumns, denialRange, denialAtom, denyOperation, denyUser, operationCall
+owes(a, "relation-arity") :- atomUse(a, _, _).
+owes(p, "denial-violated") :- denialRange(_, p).
+
+// ---- flow: operations, reachability, use of values, decided branches (producer: the fact extractor) ----
+.decl operation(o: Operation, kind: OperationKind, p: Point, s: Scope)   // exactly one row per operation of the checked IR
+.decl entry(p: Point)                                                  // the first point of a def instance
+.decl expression(e: Expression)                                       // an expression of a body
+.decl consumed(e: Expression)                                         // its value is used
+.decl effectful(e: Expression)                                        // it writes, allocates, or calls an operation of a capability or an extern
+.decl binder(b: Value)                                                 // a val, var or pattern binder
+.decl parameter(b: Value)                                              // a named parameter
+.decl binderRead(b: Value, p: Point)                                   // the binder is read at p
+.decl condition(o: Operation, x: Value, cmp: Compare, y: Value, ts: Scope, fs: Scope)   // the test x cmp y; scopes of its true and false edges
+.decl trueEdge(o: Operation, q: Point)                                 // the point reached when the condition is true
+.decl falseEdge(o: Operation, q: Point)                                // the point reached when it is false
+.decl matchArm(o: Operation, v: Value, k: Atom)                        // one arm of a match on v, for the case k
+.decl builtBy(v: Value, k: Atom)                                       // v was built by the constructor k in the same body
+.decl requiresRow(kind: OperationKind, relation: RowKind)            // table: the input relations the extractor must emit for an operation kind (S37)
+.decl emitted(o: Operation, relation: RowKind)                         // the extractor emitted this input relation for the operation (S37)
+.input requiresRow, emitted
+.input operation, entry, expression, consumed, effectful, binder, parameter, binderRead, condition, trueEdge, falseEdge, matchArm, builtBy
+owes(o, "never-reached") :- operation(o, _, _, _).
+owes(o, "unmodeled-operation") :- operation(o, _, _, _).   // ruling S37
+owes(e, "expression-unused") :- expression(e).
+owes(b, "binder-unused") :- binder(b).
+owes(b, "unused-parameter") :- parameter(b).
+owes(o, "branch-decided") :- condition(o, _, _, _, _, _).
+owes(o, "branch-decided") :- matchArm(o, _, _).
+
+// ---- capabilities: states, rows, handle scopes (producer: the fact extractor) ----
+.decl capabilityOf(c: Value, k: Unit)                                   // the instance c is of the capability unit k
+.decl startState(k: Unit, s: State)
+.decl stopState(k: Unit, s: State)
+.decl stateOf(k: Unit, s: State)                                       // the states the capability k declares
+.decl entryState(op: Atom, s: State)                                   // the state an operation needs
+.decl exitState(op: Atom, s: State)                                    // the state an operation leaves
+.decl handleRange(h: Handle, first: Point, last: Point)                // the handle scope starts at first; last is one point where it ends on a path
+.decl join(j: Point)                                                   // a point where branches meet
+.decl loopHead(h: Point)                                               // a loop head
+.decl needsCapability(o: Operation, k: Unit)                           // the operation or call needs a provider of k
+.decl provider(o: Operation, c: Value)                                 // the handle or binder c serves the operation
+.decl stateRef(a: Atom, k: Unit, s: State)                             // a state name written for the capability k
+.decl capabilityValueUse(a: Atom, v: Value, role: UseRole)             // a capability value is used
+.decl handleSite(h: Atom, place: Placement)                            // a handle statement
+.decl denyState(d: Atom, k: Atom, c: Value, s: State)                  // atom k of the denial d is at(c, s)
+.input capabilityOf, startState, stopState, stateOf, entryState, exitState, handleRange, join, loopHead, needsCapability, provider, stateRef, capabilityValueUse, handleSite, denyState
+owes(o, "op-not-allowed") :- operationCall(o, _, op, _), entryState(op, _).
+owes(c, "capability-not-ended") :- handleRange(c, _, _), capabilityOf(c, _).
+owes(j, "branch-states") :- join(j).
+owes(h, "loop-state") :- loopHead(h).
+owes(o, "unhandled-effect") :- needsCapability(o, _).
+owes(a, "unknown-state") :- stateRef(a, _, _).
+owes(a, "capability-value") :- capabilityValueUse(a, _, _).
+owes(h, "handle-placement") :- handleSite(h, _).
+
+// ---- memory beyond liveness: summaries, escape, aliases, writes, frees (producer: the fact extractor) ----
+.decl callOf(o: Operation, callee: Instance, kind: CallKind)           // the operation calls the instance
+.decl callArg(o: Operation, k: number, v: Value)                      // the k-th argument of the call is the object v
+.decl param(i: Instance, k: number, v: Value)                         // the k-th parameter of the instance is the object v
+.decl returnOf(p: Point, v: Value)                                    // the instance returns v at p
+.decl handleNest(inner: Handle, outer: Handle)                        // the scope of inner stands inside the scope of outer
+.decl overwrite(p: Point, c: Value)                                   // an element of the container c is overwritten at p
+.decl alias(a: Value, v: Value)                                       // the binder a is another name for the object v
+.decl sizeClass(v: Value, class: number)                              // the size class of an object
+.decl elementWrite(o: Operation, c: Value, p: Point)                  // the operation writes an element of c at p
+.decl staticObject(v: Value)                                          // the object is static (read-only)
+.decl arrayLen(v: Value, n: number)                                   // the array v has the compile-time length n
+.decl access(v: Value, i: Value, s: Scope)                            // an element of v is read or written at index i
+.decl fillOp(o: Operation, t: TypeName)                               // tryFill with elements of type t
+.decl handleCarrying(t: TypeName)                                     // the type holds a handle
+.decl externParam(d: Instance, k: number)                             // a handle-carrying parameter of a body-less extern
+.decl externSummary(d: Instance)                                      // the extern contract states its summary
+.decl contentRead(p: Point, c: Value)                                  // an element read of the container c at p: a field or element read that reaches a held object, a move or return of c (S34)
+.decl stateAddress(a: Value)                                          // the address of a handler state
+.decl addressUse(a: Value, role: AddressRole)                         // a use of that address
+.input contentRead, callOf, callArg, param, returnOf, handleNest, overwrite, alias, sizeClass, elementWrite, staticObject, arrayLen, access, fillOp, handleCarrying, externParam, externSummary, stateAddress, addressUse
+owes(v, "region-escape") :- alloc(v, _, _).
+owes(v, "moved-twice") :- alloc(v, _, _).
+owes(v, "owner-differs-by-path") :- alloc(v, _, _).
+owes(v, "dead-retained") :- alloc(v, _, _).
+owes(v, "use-after-free") :- alloc(v, _, _).
+owes(v, "double-free") :- alloc(v, _, _).
+owes(v, "leak") :- alloc(v, _, _).
+owes(a, "alias-across-write") :- alias(a, _).
+owes(o, "write-unread") :- elementWrite(o, _, _).
+owes(o, "write-to-static") :- elementWrite(o, _, _).
+owes(v, "capacity-unused") :- arrayLen(v, _).
+owes(o, "fill-shares-handle") :- fillOp(o, _).
+owes(d, "extern-summary-missing") :- externParam(d, _).
+owes(a, "handler-state-escape") :- stateAddress(a).
+
+// ---- names, types, tests, rules, stack (producers: the names phase, the type checker, the door, the extractor) ----
+.decl unit(u: Unit, kind: symbol)                                      // kind: Def Val Enum Type Capability Handler Extern Relation Rule Test NegTest
+.decl unitName(u: Unit, name: symbol)
+.decl binderName(b: Value, sc: Scope, name: symbol)
+.decl reference(r: Atom, from: Unit)
+.decl resolves(r: Atom, u: Unit)
+.decl visibleFrom(u: Unit, from: Unit)
+.decl public(u: Unit)
+.decl mainUnit(u: Unit)
+.decl sameNamespace(u: Unit, from: Unit)                               // from stands inside the namespace of u
+.decl edge(from: Unit, to: Unit)
+.decl root(u: Unit)
+.decl imageMode(mode: symbol)                                          // Kernel or User
+.decl kernelOnly(u: Unit, code: Code)                                  // the unit owes this code unless the image is in kernel mode
+.decl ruleHeadKernel(u: Unit)                                          // a rule whose head relation is under Stigi.*
+.decl underStigi(u: Unit)
+.decl externRef(r: Atom)                                               // a reference to a body-less extern
+.decl handlerUnit(u: Unit)                                             // a handler operation
+.decl typeOf(e: Expression, t: TypeName)
+.decl expects(e: Expression, t: TypeName)
+.decl needsInference(e: Expression)
+.decl inferredType(e: Expression, t: TypeName)
+.decl arityUse(a: Atom, kind: symbol, given: number, wanted: number)  // kind: Value Type Pattern
+.decl lengthTerm(t: Atom)
+.decl linearForm(t: Atom)
+.decl typeDecl(ty: TypeName)
+.decl inlineField(ty: TypeName, inner: TypeName)
+.decl evaluation(e: Expression, site: symbol, outcome: symbol)        // site: TypeArgument Value; outcome: Done OutOfFuel ReachesExtern
+.decl matchOver(m: Atom)                                               // a match over an enum
+.decl enumCase(m: Atom, k: Atom)
+.decl armCase(m: Atom, arm: Atom, k: Atom)
+.decl wildcardArm(m: Atom, over: symbol)                               // over: Integer or Enum
+.decl patternDepth(a: Atom, d: number)
+.decl assignTo(a: Atom, target: Value)
+.decl isVar(v: Value)
+.decl handlerImpl(h: Atom, op: Atom)
+.decl sigOf(x: Atom, s: TypeName)
+.decl externDecl(d: Atom)
+.decl externCarriesFacts(d: Atom)
+.decl testGot(t: Unit, v: symbol)
+.decl testWant(t: Unit, v: symbol)
+.decl emittedRun(t: Unit)
+.decl emittedGot(t: Unit, v: symbol)
+.decl testRow(t: Unit, k: Unit)
+.decl negExpect(n: Unit, code: Code)
+.decl negRejects(n: Unit, s: symbol, code: Code)
+.decl clearsRule(rule: Unit, code: Code)
+.decl kernelRule(r: Unit)
+.decl ruleReads(r: Unit, rel: RelationName)
+.decl userRelation(rel: RelationName)
+.decl frameBytes(i: Instance, bytes: number)
+.decl depthBound(i: Instance, limit: number)
+.decl rootInstance(i: Instance)
+.decl stackBudget(bytes: number)
+.input unit, unitName, binderName, reference, resolves, visibleFrom, public, mainUnit, sameNamespace, edge, root, imageMode, kernelOnly, ruleHeadKernel, underStigi, externRef, handlerUnit
+.input typeOf, expects, needsInference, inferredType, arityUse, lengthTerm, linearForm, typeDecl, inlineField, evaluation, matchOver, enumCase, armCase, wildcardArm, patternDepth, assignTo, isVar, handlerImpl, sigOf, externDecl, externCarriesFacts
+.input testGot, testWant, emittedRun, emittedGot, testRow, negExpect, negRejects, clearsRule, kernelRule, ruleReads, userRelation, frameBytes, depthBound, rootInstance, stackBudget
+owes(r, "unresolved-name") :- reference(r, _).
+owes(r, "private-reference") :- resolves(r, _).
+owes(u, "duplicate") :- unitName(u, _).
+owes(b, "duplicate") :- binderName(b, _, _).
+owes(u, c) :- kernelOnly(u, c).
+owes(u, "rule-outside-kernel") :- ruleHeadKernel(u).
+owes(r, "extern-outside-handler") :- externRef(r).
+owes(u, "pub-unused") :- public(u).
+owes(u, "pub-on-test") :- public(u).
+owes(u, "no-reader") :- unit(u, _).
+owes(e, "mismatch") :- expects(e, _).
+owes(e, "cannot-infer") :- needsInference(e).
+owes(a, "arity") :- arityUse(a, "Value", _, _).
+owes(a, "type-arity") :- arityUse(a, "Type", _, _).
+owes(a, "pattern-arity") :- arityUse(a, "Pattern", _, _).
+owes(t, "length-not-linear") :- lengthTerm(t).
+owes(ty, "recursive-type") :- typeDecl(ty).
+owes(e, "type-fuel") :- evaluation(e, "TypeArgument", _).
+owes(e, "evaluation-fuel") :- evaluation(e, "Value", _).
+owes(e, "not-compile-time") :- evaluation(e, _, _).
+owes(m, "not-exhaustive") :- matchOver(m).
+owes(m, "wildcard-arm") :- wildcardArm(m, _).
+owes(a, "nested-pattern") :- patternDepth(a, _).
+owes(a, "assign-val") :- assignTo(a, _).
+owes(h, "handler-signature") :- handlerImpl(h, _).
+owes(d, "extern-forges-facts") :- externDecl(d).
+owes(t, "test-failed") :- unit(t, "Test").
+owes(t, "test-evaluator-differs") :- emittedRun(t).
+owes(t, "test-leaks-capability") :- unit(t, "Test").
+owes(n, "negtest-not-rejected") :- unit(n, "NegTest").
+owes(n, "negtest-wrong-code") :- unit(n, "NegTest").
+owes(n, "negtest-form") :- unit(n, "NegTest").
+owes(n, "negtest-without-rule") :- unit(n, "NegTest").
+owes(r, "safety-reads-user") :- kernelRule(r).
+owes(d, "stack-unbounded") :- instanceOf(d, _).
+owes(d, "stack-over-budget") :- rootInstance(d).
+#endif

@@ -1,0 +1,13 @@
+// Test program for the macros of numbers.dl. Each row (op, a, b, c) is derived exactly when the macro holds.
+// cases/macros.sh feeds triples and compares the rows with the exact answer computed by `bc`.
+#include "numbers.dl"
+.decl t(a: number, b: number, c: number)
+.input t
+.decl r(op: symbol, a: number, b: number, c: number)
+.output r(IO=stdout)
+r("sumle", a, b, c) :- t(a, b, c), SUMLE(a, b, c).
+r("sumge", a, b, c) :- t(a, b, c), SUMGE(a, b, c).
+r("diffle", a, b, c) :- t(a, b, c), DIFFLE(a, b, c).
+r("diffge", a, b, c) :- t(a, b, c), DIFFGE(a, b, c).
+r("mulle", a, b, c) :- t(a, b, c), MULLE(a, b, c).
+r("mulge", a, b, c) :- t(a, b, c), MULGE(a, b, c).

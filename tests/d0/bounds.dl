@@ -1,0 +1,161 @@
+// Bounds and addition family: order facts over SSA values, indexed by scope, and integer intervals.
+// Theory: Floyd 1967, Cytron et al. 1991, Bodik-Gupta-Sarkar 2000 (order graph over SSA),
+// Cousot-Cousot 1977 (intervals as a sound over-approximation).
+// Mutants: MUTANT_MONOTONE, MUTANT_PHI, MUTANT_SELF, MUTANT_UPPER, MUTANT_PLAINADD, MUTANT_ADDHIGH, MUTANT_ADDLOW,
+// MUTANT_ADDRESULT, MUTANT_ANYROW, MUTANT_BELOWASLEQ, MUTANT_DOMOFF, MUTANT_AX_REFL, MUTANT_AX_U64ZERO, MUTANT_AX_LITLEQ,
+// MUTANT_AX_LITBELOW, MUTANT_AX_BELOWLEQ, MUTANT_AX_TRANSBL, MUTANT_AX_TRANSLB, MUTANT_AX_TRANSLL, MUTANT_AX_SUCC (S36).
+// (cases/run.sh). Arithmetic that can leave the number range is written with the macros of numbers.dl.
+#ifndef STIGI_BOUNDS
+#define STIGI_BOUNDS
+#include "schema.dl"
+#include "numbers.dl"
+
+.decl dom(s: Scope, up: Scope)
+dom(s, s) :- scope(s).
+dom(s, u) :- parent(s, m), dom(m, u).
+
+.decl below(x: Value, y: Value, s: Scope)
+.decl leq(x: Value, y: Value, s: Scope)
+.decl addExact(o: Operation)       // the addition cannot overflow (positive proof; cleared is only a sink)
+.decl exact(a: Value)              // the value is the exact sum of its operands
+
+// credits hold in every dominated scope
+#ifdef MUTANT_DOMOFF
+below(x, y, s) :- baseBelow(x, y, _), scope(s).
+#else
+below(x, y, s) :- baseBelow(x, y, u), dom(s, u).
+#endif
+leq(x, y, s) :- baseLeq(x, y, u), dom(s, u).
+// order axioms
+#ifdef MUTANT_AX_REFL
+leq(x, x, s) :- value(x), scope(s), 1 = 2.
+#else
+leq(x, x, s) :- value(x), scope(s).
+#endif
+#ifdef MUTANT_AX_U64ZERO
+leq(z, x, s) :- lit(z, 0), u64(x), scope(s), 1 = 2.
+#else
+leq(z, x, s) :- lit(z, 0), u64(x), scope(s).
+#endif
+#ifdef MUTANT_AX_LITLEQ
+leq(a, b, s) :- lit(a, n), lit(b, m), n <= m, scope(s), 1 = 2.
+#else
+leq(a, b, s) :- lit(a, n), lit(b, m), n <= m, scope(s).
+#endif
+#ifdef MUTANT_AX_LITBELOW
+below(a, b, s) :- lit(a, n), lit(b, m), n < m, scope(s), 1 = 2.
+#else
+below(a, b, s) :- lit(a, n), lit(b, m), n < m, scope(s).
+#endif
+#ifdef MUTANT_AX_BELOWLEQ
+leq(x, y, s) :- below(x, y, s), 1 = 2.
+#else
+leq(x, y, s) :- below(x, y, s).
+#endif
+#ifdef MUTANT_AX_TRANSBL
+below(x, z, s) :- below(x, y, s), leq(y, z, s), 1 = 2.
+#else
+below(x, z, s) :- below(x, y, s), leq(y, z, s).
+#endif
+#ifdef MUTANT_AX_TRANSLB
+below(x, z, s) :- leq(x, y, s), below(y, z, s), 1 = 2.
+#else
+below(x, z, s) :- leq(x, y, s), below(y, z, s).
+#endif
+#ifdef MUTANT_AX_TRANSLL
+leq(x, z, s) :- leq(x, y, s), leq(y, z, s), 1 = 2.
+#else
+leq(x, z, s) :- leq(x, y, s), leq(y, z, s).
+#endif
+// successor: a = x + 1 and x < b give a <= b (b is a machine value, so a is exact)
+#ifdef MUTANT_AX_SUCC
+leq(a, b, s) :- addOp(_, a, x, k, _), lit(k, 1), below(x, b, s), 1 = 2.
+#else
+leq(a, b, s) :- addOp(_, a, x, k, _), lit(k, 1), below(x, b, s).
+#endif
+// an addition gives order facts only once it is proved exact; y >= 0 gives x <= a, y > 0 gives x < a
+#ifdef MUTANT_SELF
+leq(x, a, s) :- addOp(_, a, x, y, _), lower(y, ly, s), ly >= 0, scope(s).
+below(x, a, s) :- addOp(_, a, x, y, _), lower(y, ly, s), ly > 0, scope(s).
+#else
+leq(x, a, s) :- addOp(_, a, x, y, _), lower(y, ly, s), ly >= 0, exact(a), scope(s).
+below(x, a, s) :- addOp(_, a, x, y, _), lower(y, ly, s), ly > 0, exact(a), scope(s).
+#endif
+// monotone offsets (literal addends c and d)
+#ifdef MUTANT_MONOTONE
+leq(a, b, s) :- addOp(_, a, x, _, _), addOp(_, b, y, _, _), leq(x, y, s), exact(b).
+#else
+leq(a, b, s) :- addOp(_, a, x, k, _), lit(k, c), addOp(_, b, y, m, _), lit(m, d), leq(x, y, s), c <= d, exact(b).
+#endif
+below(a, b, s) :- addOp(_, a, x, k, _), lit(k, c), addOp(_, b, y, m, _), lit(m, d), below(x, y, s), c <= d, exact(b).
+// joins: a merged value has a bound only when both incoming values have it, each at its own edge scope
+#ifdef MUTANT_PHI
+leq(p, t, j) :- phi(p, _, _, b, sb, j), leq(b, t, sb).
+#else
+leq(p, t, j) :- phi(p, a, sa, b, sb, j), leq(a, t, sa), leq(b, t, sb).
+#endif
+leq(t, p, j) :- phi(p, a, sa, b, sb, j), leq(t, a, sa), leq(t, b, sb).
+below(p, t, j) :- phi(p, a, sa, b, sb, j), below(a, t, sa), below(b, t, sb).
+leq(p, q, j) :- phi(p, a, sa, b, sb, j), phi(q, c, sa, d, sb, j), leq(a, c, sa), leq(b, d, sb).
+
+// integer intervals. upperBase and lowerBase never add or subtract, so their derivation is finite;
+// upper and lower step once from them, and take the result bounds of exact operations (those never feed back).
+.decl upperBase(x: Value, h: number, s: Scope)
+.decl lowerBase(x: Value, l: number, s: Scope)
+.decl upper(x: Value, h: number, s: Scope)
+.decl lower(x: Value, l: number, s: Scope)
+upperBase(x, h, s) :- valueType(x, t), typeRange(t, _, h), scope(s).
+upperBase(x, n, s) :- lit(x, n), scope(s).
+upperBase(x, h, s) :- leq(x, y, s), upperBase(y, h, s).
+lowerBase(x, l, s) :- valueType(x, t), typeRange(t, l, _), scope(s).
+lowerBase(x, n, s) :- lit(x, n), scope(s).
+lowerBase(x, l, s) :- leq(y, x, s), lowerBase(y, l, s).
+upper(x, h, s) :- upperBase(x, h, s).
+lower(x, l, s) :- lowerBase(x, l, s).
+#ifdef MUTANT_UPPER
+upper(x, h - 2, s) :- below(x, y, s), upperBase(y, h, s), h > MINN.
+#else
+upper(x, h - 1, s) :- below(x, y, s), upperBase(y, h, s), h > MINN.
+#endif
+lower(x, l + 1, s) :- below(y, x, s), lowerBase(y, l, s), l < MAXN.
+
+// a = x + y stays inside the type of a: both ends of the interval of the sum, without computing a sum that can wrap
+#ifdef MUTANT_PLAINADD
+addExact(o) :- addOp(o, a, x, y, s), valueType(a, t), typeRange(t, l, h), upper(x, hx, s), upper(y, hy, s),
+  lower(x, lx, s), lower(y, ly, s), hx + hy <= h, l <= lx + ly.
+#elif defined(MUTANT_ADDHIGH)
+addExact(o) :- addOp(o, a, x, y, s), valueType(a, t), typeRange(t, l, _), lower(x, lx, s), lower(y, ly, s), SUMGE(lx, ly, l).
+#elif defined(MUTANT_ADDLOW)
+addExact(o) :- addOp(o, a, x, y, s), valueType(a, t), typeRange(t, _, h), upper(x, hx, s), upper(y, hy, s), SUMLE(hx, hy, h).
+#else
+addExact(o) :- addOp(o, a, x, y, s), valueType(a, t), typeRange(t, l, h), upper(x, hx, s), upper(y, hy, s),
+  lower(x, lx, s), lower(y, ly, s), SUMLE(hx, hy, h), SUMGE(lx, ly, l).
+#endif
+exact(a) :- addOp(o, a, _, _, _), addExact(o).
+// the interval of an exact sum; a pair of bounds is used only when its own sum is inside the type
+#ifndef MUTANT_ADDRESULT
+upper(a, hx + hy, s) :- addOp(o, a, x, y, s0), addExact(o), dom(s, s0), valueType(a, t), typeRange(t, l, h),
+  upper(x, hx, s), upper(y, hy, s), SUMLE(hx, hy, h), SUMGE(hx, hy, l).
+lower(a, lx + ly, s) :- addOp(o, a, x, y, s0), addExact(o), dom(s, s0), valueType(a, t), typeRange(t, l, h),
+  lower(x, lx, s), lower(y, ly, s), SUMLE(lx, ly, h), SUMGE(lx, ly, l).
+#endif
+
+// clearing rules
+cleared(o, "index-unproved") :- indexRead(o, i, n, s), below(i, n, s).
+cleared(o, "overflow-unproved") :- addExact(o).
+// every owed order row of an operation and code must be proved (one negation over the completed order relations)
+#ifdef MUTANT_ANYROW
+cleared(o, c) :- leqOwed(o, x, y, s, c), leq(x, y, s).
+cleared(o, c) :- belowOwed(o, x, y, s, c), below(x, y, s).
+#else
+.decl missingOrder(o: Operation, c: Code)
+#ifdef MUTANT_BELOWASLEQ
+missingOrder(o, c) :- belowOwed(o, x, y, s, c), !leq(x, y, s).
+#else
+missingOrder(o, c) :- belowOwed(o, x, y, s, c), !below(x, y, s).
+#endif
+missingOrder(o, c) :- leqOwed(o, x, y, s, c), !leq(x, y, s).
+cleared(o, c) :- leqOwed(o, _, _, _, c), !missingOrder(o, c).
+cleared(o, c) :- belowOwed(o, _, _, _, c), !missingOrder(o, c).
+#endif
+#endif

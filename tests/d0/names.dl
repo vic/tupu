@@ -1,0 +1,99 @@
+// Names family (vic/spec/rules.md 9, names.md): resolution, visibility, duplicates, kernel space, externs, pub, closure.
+// Theory: none for the clearing rules (each is a direct join of the names phase's relation, T9); the closure is
+// reachability over the dependency graph (T1). The names phase produces `resolves` and `visibleFrom`; Datalog judges.
+// Mutants (cases/names.cases): MUTANT_NAMERES, MUTANT_VISOFF, MUTANT_DUPOFF, MUTANT_DUPBINDEROFF, MUTANT_KERNELOFF,
+// MUTANT_RULEKERNELOFF, MUTANT_EXTHANDLEROFF, MUTANT_OUTSIDEOFF, MUTANT_MAINOFF, MUTANT_PUBTESTOFF, MUTANT_NOREADEROFF,
+// MUTANT_NOTESTROOT, MUTANT_NOEDGE, MUTANT_USEROFF.
+#ifndef STIGI_NAMES
+#define STIGI_NAMES
+#include "schema.dl"
+#include "tests.dl"
+
+#ifdef MUTANT_NAMERES
+cleared(r, "unresolved-name") :- reference(r, _).
+#else
+cleared(r, "unresolved-name") :- reference(r, _), resolves(r, _).
+#endif
+#ifdef MUTANT_VISOFF
+cleared(r, "private-reference") :- resolves(r, _).
+#else
+cleared(r, "private-reference") :- resolves(r, u), reference(r, from), visibleFrom(u, from).
+#endif
+.decl dupName(u: Unit)
+.decl dupBinder(b: Value)
+#ifdef MUTANT_DUPOFF
+dupName(u) :- unitName(u, _), 1 = 2.
+#else
+dupName(u) :- unitName(u, n), unitName(v, n), u != v.
+#endif
+#ifdef MUTANT_DUPBINDEROFF
+dupBinder(b) :- binderName(b, _, _), 1 = 2.
+#else
+dupBinder(b) :- binderName(b, s, n), binderName(c, s, n), b != c.
+#endif
+cleared(u, "duplicate") :- unitName(u, _), !dupName(u).
+cleared(b, "duplicate") :- binderName(b, _, _), !dupBinder(b).
+#ifdef MUTANT_KERNELOFF
+cleared(u, c) :- kernelOnly(u, c).
+#else
+cleared(u, c) :- kernelOnly(u, c), imageMode("Kernel").
+#endif
+#ifdef MUTANT_RULEKERNELOFF
+cleared(u, "rule-outside-kernel") :- ruleHeadKernel(u).
+#else
+cleared(u, "rule-outside-kernel") :- ruleHeadKernel(u), underStigi(u).
+#endif
+.decl mayUseExtern(u: Unit)
+mayUseExtern(u) :- handlerUnit(u).
+mayUseExtern(u) :- underStigi(u).
+#ifdef MUTANT_EXTHANDLEROFF
+cleared(r, "extern-outside-handler") :- externRef(r).
+#else
+cleared(r, "extern-outside-handler") :- externRef(r), reference(r, from), mayUseExtern(from).
+#endif
+// pub: an outside reader, or main; never on a Test or a NegTest
+.decl outsideReader(u: Unit)
+.decl isTest(u: Unit)
+outsideReader(u) :- edge(f, u), !sameNamespace(u, f).
+isTest(u) :- unit(u, "Test").
+isTest(u) :- unit(u, "NegTest").
+#ifdef MUTANT_OUTSIDEOFF
+cleared(u, "pub-unused") :- public(u).
+#else
+cleared(u, "pub-unused") :- public(u), outsideReader(u).
+#ifdef MUTANT_MAINOFF
+#else
+cleared(u, "pub-unused") :- public(u), mainUnit(u).
+#endif
+#endif
+#ifdef MUTANT_PUBTESTOFF
+cleared(u, "pub-on-test") :- public(u).
+#else
+cleared(u, "pub-on-test") :- public(u), !isTest(u).
+#endif
+// roots and tree shaking: a unit stays only when a root reaches it
+.decl reached(u: Unit)
+#ifdef MUTANT_NOTESTROOT
+reached(u) :- root(u), !isTest(u).
+#else
+reached(u) :- root(u).
+#endif
+#ifdef MUTANT_NOEDGE
+reached(v) :- root(u), edge(u, v), 1 = 2.
+#else
+reached(v) :- reached(u), edge(u, v).
+#endif
+#ifdef MUTANT_NOREADEROFF
+cleared(u, "no-reader") :- unit(u, _).
+#else
+cleared(u, "no-reader") :- unit(u, _), reached(u).
+#endif
+// a rule of the kernel never reads a user relation (safety-reads-user): user knowledge cannot clear a safety obligation
+.decl readsUser(r: Unit)
+readsUser(r) :- ruleReads(r, rel), userRelation(rel).
+#ifdef MUTANT_USEROFF
+cleared(r, "safety-reads-user") :- kernelRule(r).
+#else
+cleared(r, "safety-reads-user") :- kernelRule(r), !readsUser(r).
+#endif
+#endif

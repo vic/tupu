@@ -1,0 +1,21 @@
+# NOT RUN BY SOUFFLE (ruling S23). Souffle numbers are signed 64-bit and U64 has high 2^64 - 1.
+# These are the expected rows of the arithmetic shapes of arith.cases with `typeRange(U64, 0, 18446744073709551615)`
+# and `typeWidth(U64, 64)`. The seed engine (rung C1) and stigi (rung S1, 128-bit integers) must reproduce them.
+# Same line form as expected.txt; constants scale with the width (U8 255 -> U64 18446744073709551615).
+u64 addOver : addO/overflow-unproved       # x unrestricted, a = x + 1
+u64 addGuard :                             # x < 18446744073709551615, a = x + 1
+u64 addChainBad : addB/overflow-unproved   # x < 18446744073709551615 - 59, a = x + 50, b = a + 10
+u64 guard2p32 : rd/index-unproved          # i < 4294967296 against an array of 5
+u64 guard2p64 : rd/index-unproved          # i < 18446744073709551615 against an array of 5
+u64 guard4 :                               # i < 4 against an array of 5
+u64 subFree : subO/overflow-unproved       # a = x - y, nothing known
+u64 subOrder :                             # a = x - y with leq(y, x)
+u64 mulOver : mulO/overflow-unproved       # x < 2^32 + 1, y < 2^32 + 1
+u64 mulOk :                                # x < 2^32, y < 2^32
+u64 divZero : divO/divisor-unproved        # divisor unrestricted
+u64 divPos :                               # lower(divisor) >= 1; no overflow row (unsigned)
+u64 shiftWide : shO/shift-unproved         # amount < 65
+u64 shiftOk :                              # amount < 64
+u64 litHigh : k/literal-out-of-range       # a literal 18446744073709551616
+u64 litMax :                               # a literal 18446744073709551615
+u64 remIndex :                             # a = x % n, n literal 10, index a into length 10

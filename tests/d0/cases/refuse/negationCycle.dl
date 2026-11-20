@@ -1,0 +1,7 @@
+.decl b(x: number)
+.decl a(x: number)
+.decl c(x: number)
+b(1).
+a(x) :- b(x), !c(x).
+c(x) :- b(x), !a(x).
+.output a

@@ -1,0 +1,6 @@
+.decl b(x: number)
+.decl c(x: number, y: number)
+.decl a(x: number)
+b(1).
+a(x) :- b(x), !c(x, y).
+.output a

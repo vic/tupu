@@ -1,0 +1,40 @@
+# Names family cases (sourced by run.sh; vic/spec/rules.md 9, names.md). Expected rows are in expected.txt.
+nv() { verdict names "$1" "${2:-}" names; }
+nm() { mk "$1"; }
+nm refOk; f reference 'r1 u1'; f resolves 'r1 u2'; f visibleFrom 'u2 u1'
+nm refUnresolved; f reference 'r1 u1'
+nm refPrivate; f reference 'r1 u1'; f resolves 'r1 u2'
+nm dupUnit; f unitName 'a n' 'b n'
+nm dupUnitOk; f unitName 'a n1' 'b n2'
+nm dupBinder; f binderName 'x1 s v' 'x2 s v'
+nm dupBinderOk; f binderName 'x1 s v' 'x2 t v'
+nm kernelUser; f kernelOnly 'u1 reserved-name' 'u2 extern-denied' 'u3 top-level-name'; f imageMode User
+nm kernelMode; f kernelOnly 'u1 reserved-name' 'u2 extern-denied' 'u3 top-level-name'; f imageMode Kernel
+nm ruleKernelBad; f ruleHeadKernel r1
+nm ruleKernelOk; f ruleHeadKernel r1; f underStigi r1
+nm externBad; f externRef r1; f reference 'r1 u1'; f resolves 'r1 e1'; f visibleFrom 'e1 u1'
+nm externOk; f externRef r1; f reference 'r1 u1'; f resolves 'r1 e1'; f visibleFrom 'e1 u1'; f handlerUnit u1
+nm pubOutside; f public u1; f edge 'x u1'
+nm pubUnused; f public u1; f edge 'x u1'; f sameNamespace 'u1 x'
+nm pubMain; f public u1; f mainUnit u1
+nm pubTest; f public t1; f unit 't1 Test'; f root t1; f testGot 't1 v'; f testWant 't1 v'; f edge 'x t1'
+nm closure; f unit 'a Def' 'b Def' 'c Def'; f root a; f edge 'a b'
+nm closureOk; f unit 'a Def' 'b Def' 'c Def'; f root a; f edge 'a b' 'b c'
+nm testRoot; f unit 't Test' 'a Def'; f root t; f edge 't a'; f testGot 't v'; f testWant 't v'
+nm safetyOk; f kernelRule k1; f ruleReads 'k1 relA'; f userRelation relB
+nm safetyBad; f kernelRule k1; f ruleReads 'k1 relB'; f userRelation relB
+for x in refOk refUnresolved refPrivate dupUnit dupUnitOk dupBinder dupBinderOk kernelUser kernelMode ruleKernelBad ruleKernelOk externBad externOk pubOutside pubUnused pubMain pubTest closure closureOk testRoot safetyOk safetyBad; do nv $x; done
+nv refUnresolved -MMUTANT_NAMERES
+nv refPrivate -MMUTANT_VISOFF
+nv dupUnit -MMUTANT_DUPOFF
+nv dupBinder -MMUTANT_DUPBINDEROFF
+nv kernelUser -MMUTANT_KERNELOFF
+nv ruleKernelBad -MMUTANT_RULEKERNELOFF
+nv externBad -MMUTANT_EXTHANDLEROFF
+nv pubUnused -MMUTANT_OUTSIDEOFF
+nv pubMain -MMUTANT_MAINOFF
+nv pubTest -MMUTANT_PUBTESTOFF
+nv closure -MMUTANT_NOREADEROFF
+nv testRoot -MMUTANT_NOTESTROOT
+nv closureOk -MMUTANT_NOEDGE
+nv safetyBad -MMUTANT_USEROFF

@@ -1,0 +1,3 @@
+// Flow with the arithmetic rules: a case whose literals owe literal-out-of-range and must clear it.
+#include "flow.dl"
+#include "arith.dl"

@@ -1,0 +1,4 @@
+source: jj -R ~/hk/stigi/vic file show -r vic root:spec/datalog/<path>
+vic change id / commit id: kvrvyqlzsvnmzrrxvolxyxxokkwuuooz 0d1672794c00b89feebdc9956deea49bf8d45222
+files: spec/datalog/*.dl, cases/* (nix files excluded)
+refresh only when stigi says a d0 landing happened

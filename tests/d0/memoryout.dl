@@ -1,0 +1,7 @@
+// The decision relations of the memory family printed for the cases (regions, reuse, summaries).
+#include "memory.dl"
+.output regionEnd(IO=stdout)
+.output regionEndAtExit(IO=stdout)
+.output reuseAt(IO=stdout)
+.output resultFrom(IO=stdout)
+.output resultFresh(IO=stdout)

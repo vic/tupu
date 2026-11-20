@@ -1,0 +1,129 @@
+ambient_clock	ambient-world	unhandled-effect	capabilities
+ambient_env	ambient-world	unhandled-effect	capabilities
+ambient_files	ambient-world	unhandled-effect	capabilities
+ambient_net	ambient-world	unhandled-effect	capabilities
+ambient_pages	ambient-world	unhandled-effect	capabilities
+array_assign	assign-val	assign-val	types
+array_blit_partial	index-unproved	index-unproved	bounds
+array_blit_unproved	index-unproved	index-unproved	bounds
+array_escape	region-escape	region-escape	memory
+array_field	mismatch	mismatch	types
+array_grow_copy_unproved	index-unproved	index-unproved	bounds
+array_grow_stale	mismatch	mismatch	types
+array_loop	length-unnamed	-	-	cannot be written in L0: a length is a term of the type, so an unnamed length cannot exist (corpus-intent.md 1)
+array_put_data_call	put-data	region-escape	memory
+array_put_data	put-data	region-escape	memory
+array_put_data_var	put-data	region-escape	memory
+array_put_nomut	unhandled-effect	unhandled-effect	capabilities
+array_put_param_caller	capability-bound	region-escape	memory
+array_put_param_other	capability-bound	region-escape	memory
+array_put_param_unbound	put-data	region-escape	memory
+array_put_str_escape	region-escape	region-escape	memory
+array_put_unproved	index-unproved	index-unproved	bounds
+array_shadow	index-unproved	index-unproved	bounds
+array_slice	slice-unproved	precondition-unproved	contracts
+array_unproved	index-unproved	index-unproved	bounds
+array_var	index-unproved	index-unproved	bounds
+atom_list	mismatch	mismatch	types
+atom_nocap	no-capability	unhandled-effect	capabilities
+atom_noeffect	unhandled-effect	unhandled-effect	capabilities
+atom_slot_range	index-unproved	index-unproved	bounds
+bytes_escape	region-escape	region-escape	memory
+bytes_len	mismatch	mismatch	types
+call_targs	arity	arity	types
+cap_ambig	no-capability	unhandled-effect	capabilities
+cap_none	no-capability	unhandled-effect	capabilities
+cap_norel	parse	-	-	the door rejects the text before any fact exists (obligations.md 3); checked by the parser round trip of rung C2, not by Souffle
+cap_order	capability-not-ended	capability-not-ended	capabilities
+cap_param	capability-param	capability-value	capabilities
+cap_seq_many	op-not-allowed	op-not-allowed	capabilities
+cap_seq_none	op-not-allowed	op-not-allowed	capabilities
+cap_seq_open	capability-not-ended	capability-not-ended	capabilities
+cap_value	capability-value	capability-value	capabilities
+caret_str_escape	region-escape	region-escape	memory
+caret_val	use-after-free	region-escape	memory
+cell_nomut	unhandled-effect	unhandled-effect	capabilities
+cell_seal_block	cell-seal	alias-across-write	memory
+cell_seal_call	cell-seal	alias-across-write	memory
+chosen_count	chosen-count	arity	types
+chosen_ev	chosen-evidence	mismatch	types
+chosen_notcap	chosen-not-capability	capability-value	capabilities
+cstr_hides	binder-hides-type	duplicate	names
+cstruct_name	none	-	-	not in L0: a C struct unit does not exist; a top-level name is top-level-name and an extern is extern-denied (door code before facts: not-in-language)
+cstruct_noabi	parse	-	-	the door rejects the text before any fact exists (obligations.md 3); checked by the parser round trip of rung C2, not by Souffle
+cstruct_type	none	-	-	not in L0: a C struct unit does not exist (not-in-language)
+double_free	op-not-allowed	op-not-allowed	capabilities
+dup_case	duplicate	duplicate	names
+dup_def	duplicate	duplicate	names
+dup_lib	duplicate	duplicate	names
+dup_type	duplicate	duplicate	names
+eff_flow	op-not-allowed	op-not-allowed	capabilities
+eff_handler_row	unhandled-effect	unhandled-effect	capabilities
+eff_rt	rt-outside-srs	extern-denied	names
+eff_unhandled	unhandled-effect	unhandled-effect	capabilities
+end_gone	parse	-	-	the door rejects the text before any fact exists (obligations.md 3); checked by the parser round trip of rung C2, not by Souffle
+erased_arg	capability-erased	capability-value	capabilities
+erased_extern	capability-erased	capability-value	capabilities
+erased_field	capability-erased	capability-value	capabilities
+erased_result	capability-erased	capability-value	capabilities
+ev_ambig_local	ambiguous-evidence	-	-	growth, not L0: traits and givens (vic/growth/language.md 1; corpus-intent.md 1)
+ev_value	evidence-value	capability-value	capabilities
+extern_abi	none	-	-	not in L0: an extern ABI other than "c" is not-in-language (door code before facts)
+generic_hide	binder-hides-type	duplicate	names
+group_facts	fact-not-capability	mismatch	types
+group_out	unknown-relation	unresolved-name	names
+handle_row_end	region-ended-under-handle	region-escape	memory
+handle_row_end_state	region-ended-under-handle	region-escape	memory
+handler_ptr_arg	use-after-free	region-escape	memory
+handler_ptr_binder	capability-bound	region-escape	memory
+handler_ptr_local	capability-bound	region-escape	memory
+handler_ptr_region	capability-bound	region-escape	memory
+handler_result_type	mismatch	mismatch	types
+handler_trait	not-a-capability	unresolved-name	names
+hstate_escape	region-escape	region-escape	memory
+hstate_init_region	region-escape	region-escape	memory
+hstate_mixed	handler-state-type	mismatch	types
+hstate_shape	handler-state-shape	handler-signature	types
+libc_dotted	none	-	-	not in L0: a libc unit does not exist; a top-level name is top-level-name (door code before facts: not-in-language)
+libc_outside	libc-outside-handler	extern-outside-handler	names
+libc_val_dotted	none	-	-	not in L0: a libc val unit does not exist (not-in-language)
+libc_val_noabi	parse	-	-	the door rejects the text before any fact exists (obligations.md 3); checked by the parser round trip of rung C2, not by Souffle
+libc_val_type	none	-	-	not in L0: a libc val unit does not exist (not-in-language)
+libc_variadic_i64	mismatch	mismatch	types
+mod_dup	duplicate	duplicate	names
+ms_answer	answer-type	-	-	growth, not L0: multi-shot handlers (vic/growth/language.md 3; corpus-intent.md 1)
+ms_resume_arg	mismatch	-	-	growth, not L0: `resume` is not-in-language in stigi 1 (capabilities.md 2)
+ms_resume_not_k	resume-not-k	-	-	growth, not L0: multi-shot handlers (vic/growth/language.md 3)
+net_after_close	op-not-allowed	op-not-allowed	capabilities
+net_before_connect	op-not-allowed	op-not-allowed	capabilities
+net_no_close	capability-not-ended	capability-not-ended	capabilities
+op_binder_type	op-binder	handler-signature	types
+op_data_escape	region-escape	region-escape	memory
+op_param_arity	handler-arity	handler-signature	types
+op_param_type	mismatch	mismatch	types
+op_ptr_binder	use-after-free	region-escape	memory
+op_ptr_escape	region-escape	region-escape	memory
+op_ptr_request	use-after-free	region-escape	memory
+op_ptr	use-after-free	region-escape	memory
+op_region_escape	region-escape	region-escape	memory
+op_region_noregion	no-capability	unhandled-effect	capabilities
+op_region_row_noregion	unhandled-effect	unhandled-effect	capabilities
+op_region_sig	op-signature	handler-signature	types
+op_result_cap	op-result-capability	-	-	growth, not L0: state-generic operations (vic/growth/language.md 4; corpus-intent.md 1)
+op_result_escape_nested	region-escape	region-escape	memory
+op_result_escape	region-escape	region-escape	memory
+op_str_escape	region-escape	region-escape	memory
+os_rt_outside	rt-outside-srs	extern-denied	names
+os_unhandled	unhandled-effect	unhandled-effect	capabilities
+pat_nested_dotted	none	nested-pattern	types
+pat_nested_qualified	none	nested-pattern	types
+pat_nested_unqualified	nested-pattern	nested-pattern	types
+proto_ambiguous	protocol-ambiguous	-	-	growth, not L0: protocols with state-generic operations (vic/growth/language.md 4)
+protocol_gone	parse	-	-	the door rejects the text before any fact exists (obligations.md 3); checked by the parser round trip of rung C2, not by Souffle
+rt_ptr_user	rt-outside-srs	extern-denied	names
+spec_gone	parse	-	-	the door rejects the text before any fact exists (obligations.md 3); checked by the parser round trip of rung C2, not by Souffle
+srs_name_forge	reserved-name	reserved-name	names
+static_extent	unhandled-effect	unhandled-effect	capabilities
+tl_lambda	parse	-	-	the door rejects the text before any fact exists (obligations.md 3); checked by the parser round trip of rung C2, not by Souffle
+tval_none	value-args	arity	types
+word_range	int-range	literal-out-of-range	arith

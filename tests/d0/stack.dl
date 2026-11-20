@@ -1,0 +1,74 @@
+// Stack family (vic/spec/rules.md 8, memory.md 7). Theory: Regehr, Reid and Webb, "Eliminating Stack Overflow by Abstract
+// Interpretation" (EMSOFT 2003): the stack of a root is the longest path of frames over the call graph; a call cycle is
+// counted `limit` times. In the image the emitter computes `stackNeed`; here Souffle computes the same number with its
+// `max` aggregate and path sums (an oracle only: the engine has no aggregate, datalog-engine.md).
+// Mutants (cases/stack.cases): MUTANT_CYCLEOFF, MUTANT_BOUNDOFF, MUTANT_TAILOFF, MUTANT_LIMITONE, MUTANT_BUDGETOFF,
+// MUTANT_UNFRAMEDOFF, MUTANT_UNBOUNDREACHOFF.
+#ifndef STIGI_STACK
+#define STIGI_STACK
+#include "contracts.dl"
+
+.decl callEdge(d: Instance, e: Instance)
+.decl callsPlus(d: Instance, e: Instance)
+.decl inCycle(d: Instance)
+#ifdef MUTANT_TAILOFF
+callEdge(d, e) :- callOf(o, e, _), operationOf(o, d).
+#else
+callEdge(d, e) :- callOf(o, e, "Normal"), operationOf(o, d).
+#endif
+callsPlus(d, e) :- callEdge(d, e).
+callsPlus(d, f) :- callsPlus(d, e), callEdge(e, f).
+inCycle(d) :- callsPlus(d, d).
+#ifdef MUTANT_CYCLEOFF
+cleared(d, "stack-unbounded") :- instanceOf(d, _).
+#else
+cleared(d, "stack-unbounded") :- instanceOf(d, _), !inCycle(d).
+#ifdef MUTANT_BOUNDOFF
+#else
+cleared(d, "stack-unbounded") :- inCycle(d), depthBound(d, _).
+#endif
+#endif
+// the strongly connected components, named by the smallest ordinal of their members
+.decl sccKey(d: Instance, k: number)
+sccKey(d, k) :- inCycle(d), k = min ord(x) : { callsPlus(d, x), callsPlus(x, d) }.
+sccKey(d, ord(d)) :- instanceOf(d, _), !inCycle(d).
+// the cost of one component: its frames, times its depth bound when it is a cycle
+.decl ownCost(k: number, cost: number)
+.decl sccFrames(k: number, frames: number)
+.decl sccLimit(k: number, limit: number)
+sccFrames(k, f) :- sccKey(_, k), f = sum b : { sccKey(m, k), frameBytes(m, b) }.
+#ifdef MUTANT_LIMITONE
+sccLimit(k, 1) :- sccKey(d, k), inCycle(d), depthBound(d, _).
+#else
+sccLimit(k, l) :- sccKey(d, k), inCycle(d), l = max x : { sccKey(m, k), depthBound(m, x) }, depthBound(d, _).
+#endif
+ownCost(k, f * l) :- sccFrames(k, f), sccLimit(k, l).
+ownCost(k, f) :- sccFrames(k, f), sccKey(d, k), !inCycle(d).
+.decl keyEdge(a: number, b: number)
+keyEdge(a, b) :- callEdge(d, e), sccKey(d, a), sccKey(e, b), a != b.
+.decl pathCost(root: Instance, k: number, cost: number)
+pathCost(r, k, c) :- rootInstance(r), sccKey(r, k), ownCost(k, c).
+pathCost(r, b, c + x) :- pathCost(r, a, c), keyEdge(a, b), ownCost(b, x).
+.decl stackNeed(root: Instance, bytes: number)
+stackNeed(r, n) :- rootInstance(r), n = max c : { pathCost(r, _, c) }.
+// a frame must be known for every instance a root reaches (a missing frame keeps the code owed)
+.decl unframed(r: Instance)
+#ifdef MUTANT_UNFRAMEDOFF
+unframed(r) :- rootInstance(r), 1 = 2.
+#else
+unframed(r) :- rootInstance(r), !frameBytes(r, _).
+unframed(r) :- rootInstance(r), callsPlus(r, i), !frameBytes(i, _).
+#endif
+.decl unboundedReach(r: Instance)
+#ifdef MUTANT_UNBOUNDREACHOFF
+unboundedReach(r) :- rootInstance(r), 1 = 2.
+#else
+unboundedReach(r) :- rootInstance(r), callsPlus(r, i), inCycle(i), !depthBound(i, _).
+unboundedReach(r) :- rootInstance(r), inCycle(r), !depthBound(r, _).
+#endif
+#ifdef MUTANT_BUDGETOFF
+cleared(r, "stack-over-budget") :- rootInstance(r).
+#else
+cleared(r, "stack-over-budget") :- stackNeed(r, n), stackBudget(b), n <= b, !unframed(r), !unboundedReach(r).
+#endif
+#endif
