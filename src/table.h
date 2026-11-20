@@ -29,6 +29,12 @@ typedef struct {
 } Index;
 
 typedef struct {
+  uint64_t hash;
+  uint32_t row;
+  uint32_t used;
+} DSlot;
+
+typedef struct {
   int ncols;
   Base *kind;
   uint32_t count, cap;
@@ -36,8 +42,7 @@ typedef struct {
   uint8_t *org_kind;
   uint32_t *org_ref; /* rule index, program fact index, or 0 for input rows */
   uint32_t *round;
-  uint32_t *dslot;
-  uint8_t *dused;
+  DSlot *dsl; /* S103: dedup slots, 16 bytes: the full F3 hash, the row id, used flag */
   size_t dcap;
   Index **idx;
   int nidx, idxcap;

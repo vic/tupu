@@ -22,8 +22,7 @@ void table_free(Table *t) {
   free(t->org_kind);
   free(t->org_ref);
   free(t->round);
-  free(t->dslot);
-  free(t->dused);
+  free(t->dsl);
   for (int i = 0; i < t->nidx; i++) {
     Index *ix = t->idx[i];
     free(ix->cols);
@@ -61,12 +60,6 @@ static uint64_t hash_vals_all(const Table *t, const I128 *vals) {
   return acc;
 }
 
-static uint64_t hash_row_all(const Table *t, uint32_t row) {
-  uint64_t acc = 0;
-  for (int c = 0; c < t->ncols; c++) acc = fold_cell(acc, t->kind[c], tcell(t, c, row));
-  return acc;
-}
-
 static bool row_equals(const Table *t, uint32_t row, const I128 *vals) {
   for (int c = 0; c < t->ncols; c++)
     if (tcell(t, c, row) != vals[c]) return false;
@@ -75,23 +68,16 @@ static bool row_equals(const Table *t, uint32_t row, const I128 *vals) {
 
 static Status dedup_grow(Table *t, Err *e) {
   size_t ncap = t->dcap == 0 ? 1024 : t->dcap * 2;
-  uint32_t *ns = malloc(ncap * sizeof *ns);
-  uint8_t *nu = calloc(ncap, 1);
-  if (ns == NULL || nu == NULL) {
-    free(ns);
-    free(nu);
-    return err_oom(e);
+  DSlot *ns = calloc(ncap, sizeof *ns);
+  if (ns == NULL) return err_oom(e);
+  for (size_t k = 0; k < t->dcap; k++) { /* the stored hashes: no row is hashed again */
+    if (!t->dsl[k].used) continue;
+    size_t i = t->dsl[k].hash & (ncap - 1);
+    while (ns[i].used) i = (i + 1) & (ncap - 1);
+    ns[i] = t->dsl[k];
   }
-  for (uint32_t r = 0; r < t->count; r++) {
-    size_t i = hash_row_all(t, r) & (ncap - 1);
-    while (nu[i]) i = (i + 1) & (ncap - 1);
-    nu[i] = 1;
-    ns[i] = r;
-  }
-  free(t->dslot);
-  free(t->dused);
-  t->dslot = ns;
-  t->dused = nu;
+  free(t->dsl);
+  t->dsl = ns;
   t->dcap = ncap;
   return STATUS_OK;
 }
@@ -140,8 +126,8 @@ uint64_t table_hash_row(const Table *t, const I128 *vals) { return hash_vals_all
 bool table_contains_h(const Table *t, uint64_t h, const I128 *vals) {
   if (t->dcap == 0) return false;
   size_t i = h & (t->dcap - 1);
-  while (t->dused[i]) {
-    if (row_equals(t, t->dslot[i], vals)) return true;
+  while (t->dsl[i].used) {
+    if (t->dsl[i].hash == h && row_equals(t, t->dsl[i].row, vals)) return true; /* equal hashes: read the columns; never trust a hash alone */
     i = (i + 1) & (t->dcap - 1);
   }
   return false;
@@ -150,8 +136,8 @@ bool table_contains_h(const Table *t, uint64_t h, const I128 *vals) {
 bool table_contains(const Table *t, const I128 *vals) {
   if (t->dcap == 0) return false;
   size_t i = hash_vals_all(t, vals) & (t->dcap - 1);
-  while (t->dused[i]) {
-    if (row_equals(t, t->dslot[i], vals)) return true;
+  while (t->dsl[i].used) {
+    if (t->dsl[i].hash == hash_vals_all(t, vals) && row_equals(t, t->dsl[i].row, vals)) return true;
     i = (i + 1) & (t->dcap - 1);
   }
   return false;
@@ -164,8 +150,8 @@ Status table_add(Table *t, uint64_t h, const I128 *vals, Origin org, uint32_t re
     if (dedup_grow(t, e) != STATUS_OK) return STATUS_ERR;
   }
   size_t i = h & (t->dcap - 1);
-  while (t->dused[i]) {
-    if (row_equals(t, t->dslot[i], vals)) return STATUS_OK;
+  while (t->dsl[i].used) {
+    if (t->dsl[i].hash == h && row_equals(t, t->dsl[i].row, vals)) return STATUS_OK;
     i = (i + 1) & (t->dcap - 1);
   }
 #ifdef MUTANT_DEDUPREL
@@ -193,8 +179,9 @@ Status table_add(Table *t, uint64_t h, const I128 *vals, Origin org, uint32_t re
   t->org_kind[row] = (uint8_t)org;
   t->org_ref[row] = ref;
   t->round[row] = round;
-  t->dused[i] = 1;
-  t->dslot[i] = row;
+  t->dsl[i].used = 1;
+  t->dsl[i].hash = h;
+  t->dsl[i].row = row;
   t->count++;
   *added = true;
   return STATUS_OK;
