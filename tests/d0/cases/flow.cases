@@ -50,14 +50,19 @@ fx matchUnknown -MMUTANT_NOARM
 
 # ruling S37: the extractor states every input row an operation kind needs; a missed row keeps unmodeled-operation owed
 rw() { mk "$1"; f scope R; f entry p1; }
-rw rowsWriteOk; f operation 'w1 ElementWrite p1 R'; f requiresRow 'ElementWrite Overwrite' 'ElementWrite IndexWrite' 'ElementWrite OperationRow'; f emitted 'w1 Overwrite' 'w1 IndexWrite' 'w1 OperationRow'
-rw rowsWriteMissing; f operation 'w1 ElementWrite p1 R'; f requiresRow 'ElementWrite Overwrite' 'ElementWrite IndexWrite' 'ElementWrite OperationRow'; f emitted 'w1 IndexWrite' 'w1 OperationRow'
-rw rowsWriteIndexMissing; f operation 'w1 ElementWrite p1 R'; f requiresRow 'ElementWrite Overwrite' 'ElementWrite IndexWrite' 'ElementWrite OperationRow'; f emitted 'w1 Overwrite' 'w1 OperationRow'
+rw rowsWriteOk; f operation 'w1 ElementWrite p1 R'; f requiresRow 'ElementWrite Overwrite' 'ElementWrite IndexWrite' 'ElementWrite WriteVia' 'ElementWrite OperationRow'; f emitted 'w1 Overwrite' 'w1 IndexWrite' 'w1 WriteVia' 'w1 OperationRow'
+rw rowsWriteMissing; f operation 'w1 ElementWrite p1 R'; f requiresRow 'ElementWrite Overwrite' 'ElementWrite IndexWrite' 'ElementWrite WriteVia' 'ElementWrite OperationRow'; f emitted 'w1 IndexWrite' 'w1 WriteVia' 'w1 OperationRow'
+rw rowsWriteIndexMissing; f operation 'w1 ElementWrite p1 R'; f requiresRow 'ElementWrite Overwrite' 'ElementWrite IndexWrite' 'ElementWrite WriteVia' 'ElementWrite OperationRow'; f emitted 'w1 Overwrite' 'w1 WriteVia' 'w1 OperationRow'
+rw rowsWriteViaMissing; f operation 'w1 ElementWrite p1 R'; f requiresRow 'ElementWrite Overwrite' 'ElementWrite IndexWrite' 'ElementWrite WriteVia' 'ElementWrite OperationRow'; f emitted 'w1 Overwrite' 'w1 IndexWrite' 'w1 OperationRow'
+rw rowsCallArgOk; f operation 'c1 Call p1 R'; f requiresRow 'Call ArgVia' 'Call OperationRow'; f emitted 'c1 ArgVia' 'c1 OperationRow'
+rw rowsCallArgMissing; f operation 'c1 Call p1 R'; f requiresRow 'Call ArgVia' 'Call OperationRow'; f emitted 'c1 OperationRow'
 rw rowsAliasOk; f operation 'b1 PatternBind p1 R'; f requiresRow 'PatternBind Alias' 'PatternBind OperationRow'; f emitted 'b1 Alias' 'b1 OperationRow'
 rw rowsAliasMissing; f operation 'b1 PatternBind p1 R'; f requiresRow 'PatternBind Alias' 'PatternBind OperationRow'; f emitted 'b1 OperationRow'
 rw rowsUnknownKind; f next 'p1 p2'; f operation 'w1 Strange p1 R' 'w2 ElementWrite p2 R'; f requiresRow 'ElementWrite OperationRow'; f emitted 'w1 OperationRow' 'w2 OperationRow'
-for x in rowsWriteOk rowsWriteMissing rowsAliasOk rowsAliasMissing rowsUnknownKind rowsWriteIndexMissing; do fx $x; done
+for x in rowsWriteOk rowsWriteMissing rowsAliasOk rowsAliasMissing rowsUnknownKind rowsWriteIndexMissing rowsWriteViaMissing rowsCallArgOk rowsCallArgMissing; do fx $x; done
 fx rowsWriteMissing -MMUTANT_ANYROW
 fx rowsAliasMissing -MMUTANT_ANYROW
 fx rowsUnknownKind -MMUTANT_ROWSOFF
 fx rowsWriteIndexMissing -MMUTANT_ANYROW
+fx rowsWriteViaMissing -MMUTANT_ANYROW
+fx rowsCallArgMissing -MMUTANT_ANYROW

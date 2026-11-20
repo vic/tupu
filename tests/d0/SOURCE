@@ -1,4 +1,4 @@
-source: jj -R ~/hk/stigi/vic file show -r wmolmwvwmvlx root:spec/datalog/<path>
-vic change id / commit id: wmolmwvwmvlxnmlsxswywyuwnwlputzq 4d31e50b12493870b0e85279af171322ea447a25
+source: jj -R ~/hk/stigi/vic file show -r srorzzpqkvkn root:spec/datalog/<path>
+vic change id / commit id: srorzzpqkvknnwtlotzoxxqnprxxzzwx 3fc0dddbfc0d2679d7d806b2b57787dda369bbe1
 files: spec/datalog/*.dl, cases/* (nix files excluded)
-refreshed for S84 S85 S88 (stigi, 2026-11-20)
+refreshed for S92 S71 (stigi, 2026-11-20)

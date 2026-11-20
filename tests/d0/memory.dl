@@ -6,6 +6,7 @@
 // MUTANT_MOVEDOFF, MUTANT_OWNEROFF, MUTANT_ALIASOFF, MUTANT_RETAINOFF, MUTANT_EARLYFREE, MUTANT_NOFREE,
 // MUTANT_EXITDOUBLE, MUTANT_WRITEANY, MUTANT_STATICOFF, MUTANT_CAPOFF, MUTANT_FILLOFF, MUTANT_EXTOFF, MUTANT_ADDROFF,
 // MUTANT_NOLOCALPROP, MUTANT_NOHOLDSBASE, MUTANT_NODIRECTOUT, MUTANT_NODIRECTPROP, MUTANT_NOFREEDPROP, MUTANT_NOPENDPROP,
+// MUTANT_NOOWNERNAME, MUTANT_NOALIASNAME, MUTANT_NOELEMWRITE, MUTANT_NOCALLWRITE, MUTANT_SAMENAME, MUTANT_NOWRITEWRITE, MUTANT_NOLATERREAD, MUTANT_ORDERANY, MUTANT_NOREACHREAD, MUTANT_ANYSHARED (ruling S71),
 // MUTANT_NOCONSUMEMOVE, MUTANT_NOREGAINLOCAL, MUTANT_NOREGAINMOVED, MUTANT_NOREGAIN, MUTANT_NOCONSUMEDPROP, MUTANT_NOCONSUMEDKILL, MUTANT_CONSUMEREAD (ruling S70),
 // MUTANT_NONEXTPLUS, MUTANT_FREEFIRST, MUTANT_NOPOINTINST (ruling S36), MUTANT_NOCONTENT, MUTANT_SIBLINGCONTENT, MUTANT_NOREADSSUM, MUTANT_NOREADSELEMENTS, MUTANT_NORETURNMOVE, MUTANT_NOHOLDSTRANS, MUTANT_NOOUTTRANS, MUTANT_NOMOVEDPROP, MUTANT_UNREACHREAD, MUTANT_RESFROMOFF, MUTANT_RESFRESHOFF, MUTANT_REGALLOC, MUTANT_REGEND, MUTANT_REGEXIT, MUTANT_REUSEANY.
 #ifndef STIGI_MEMORY
@@ -260,6 +261,46 @@ aliasStale(a) :- alias(a, _), 1 = 2.
 aliasStale(a) :- overwriteAt(p, c), holds(c, v), alias(a, v), binderRead(a, q), nextPlus(p, q).
 #endif
 cleared(a, "alias-across-write") :- alias(a, _), !aliasStale(a).
+
+// ---- one writer per object (ruling S71, T18): two names that both write, or one writes and another is read later ----
+// A callee's parameter belongs to another instance, so it is never a nameOf row in the caller: that is the call exception of S45.
+.decl nameOf(b: Value, v: Value)
+.decl writesThrough(o: Operation, b: Value, p: Point)
+.decl sharedWrite(v: Value)
+#ifndef MUTANT_NOOWNERNAME
+nameOf(b, v) :- ownerName(b, v).
+#endif
+#ifndef MUTANT_NOALIASNAME
+nameOf(b, v) :- alias(b, v).
+#endif
+#ifndef MUTANT_NOELEMWRITE
+writesThrough(o, b, p) :- writeVia(o, b), elementWrite(o, _, p).
+#endif
+#ifndef MUTANT_NOCALLWRITE
+writesThrough(o, b, p) :- argVia(o, k, b), callOf(o, j, _), overwrites(j, k), operation(o, _, p, _).
+#endif
+#ifdef MUTANT_SAMENAME
+#define DISTINCT(a, b) 1 = 1
+#else
+#define DISTINCT(a, b) a != b
+#endif
+#ifndef MUTANT_NOWRITEWRITE
+sharedWrite(v) :- writesThrough(_, a, _), writesThrough(_, b, _), nameOf(a, v), nameOf(b, v), DISTINCT(a, b).
+#endif
+#ifndef MUTANT_NOLATERREAD
+#ifdef MUTANT_ORDERANY
+sharedWrite(v) :- writesThrough(_, a, _), nameOf(a, v), nameOf(b, v), DISTINCT(a, b), binderRead(b, q), reachable(q).
+#elif defined(MUTANT_NOREACHREAD)
+sharedWrite(v) :- writesThrough(_, a, p), nameOf(a, v), nameOf(b, v), DISTINCT(a, b), binderRead(b, q), nextPlus(p, q).
+#else
+sharedWrite(v) :- writesThrough(_, a, p), nameOf(a, v), nameOf(b, v), DISTINCT(a, b), binderRead(b, q), reachable(q), nextPlus(p, q).
+#endif
+#endif
+#ifdef MUTANT_ANYSHARED
+cleared(v, "shared-write") :- alloc(v, _, _).
+#else
+cleared(v, "shared-write") :- alloc(v, _, _), !sharedWrite(v).
+#endif
 
 // ---- retained: a container still owns an object that is never read again while the program allocates ----
 .decl directIn(v: Value, p: Point)

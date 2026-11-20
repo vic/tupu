@@ -17,8 +17,9 @@ one() { # family [range]: a run that fails or hits the 60 s cap is named, never 
   RANGE=${2:-} nice -n 10 timeout 60 sh "$D/run.sh" "$1" 2> /dev/null | cut -c1-230 >> "$W/stream"
   rc=$?; [ $rc = 0 ] || echo "O3 run.sh $1 ${2:+RANGE=$2 }exit $rc"
 }
+eval "$(sed -n '/^slices() {/,/^}/p' "$D/gate.sh")" # the slice list of gate.sh (S88, S92): the same list as d0
 for fam in bounds memory arith contracts flow capabilities names tests types stack corpus; do
-  if [ "$fam" = arith ]; then for r in 1-20 21-40 41-60 61-77; do ( cd "$D" && one arith "$r" ); done; else ( cd "$D" && one "$fam" ); fi
+  for r in $(slices "$fam"); do ( cd "$D" && one "$fam" "$r" ); done
 done
 grep -v '^#' "$D/expected-exact.txt" > "$W/exact"
 grep -v '^refuse ' "$D/expected.txt" > "$W/exp"

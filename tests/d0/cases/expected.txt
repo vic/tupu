@@ -138,6 +138,23 @@ memory growRealloc -MMUTANT_NOCONSUMEDKILL: a/moved-twice
 memory growOk -MMUTANT_NOCONSUMEMOVE: a/value-unused 
 memory growFailedOk -MMUTANT_NOREGAINLOCAL: w/g2 
 memory growFailedReturn -MMUTANT_NOREGAINMOVED: a/moved-twice 
+memory sharedOne : 
+memory sharedLater : v/shared-write 
+memory sharedBefore : 
+memory sharedTwo : v/shared-write 
+memory sharedCall : v/shared-write 
+memory sharedCallOk : 
+memory sharedDead : c/branch-decided of/never-reached 
+memory sharedOne -MMUTANT_SAMENAME: v/shared-write 
+memory sharedLater -MMUTANT_NOLATERREAD: 
+memory sharedCall -MMUTANT_NOCALLWRITE: 
+memory sharedTwo -MMUTANT_NOWRITEWRITE: 
+memory sharedBefore -MMUTANT_ORDERANY: v/shared-write 
+memory sharedLater -MMUTANT_NOALIASNAME: 
+memory sharedLater -MMUTANT_NOOWNERNAME: 
+memory sharedLater -MMUTANT_NOELEMWRITE: 
+memory sharedLater -MMUTANT_ANYSHARED: 
+memory sharedDead -MMUTANT_NOREACHREAD: c/branch-decided of/never-reached v/shared-write 
 arith addU8ok : 
 arith addU8over : addO/overflow-unproved 
 arith addI64max : addO/overflow-unproved 
@@ -291,10 +308,15 @@ flow rowsAliasOk :
 flow rowsAliasMissing : b1/unmodeled-operation 
 flow rowsUnknownKind : w1/unmodeled-operation 
 flow rowsWriteIndexMissing : w1/unmodeled-operation 
+flow rowsWriteViaMissing : w1/unmodeled-operation 
+flow rowsCallArgOk : 
+flow rowsCallArgMissing : c1/unmodeled-operation 
 flow rowsWriteMissing -MMUTANT_ANYROW: 
 flow rowsAliasMissing -MMUTANT_ANYROW: 
 flow rowsUnknownKind -MMUTANT_ROWSOFF: 
 flow rowsWriteIndexMissing -MMUTANT_ANYROW: 
+flow rowsWriteViaMissing -MMUTANT_ANYROW: 
+flow rowsCallArgMissing -MMUTANT_ANYROW: 
 capabilities walkOk : 
 capabilities afterClose : c/capability-not-ended o2/op-not-allowed 
 capabilities notEnded : c/capability-not-ended 

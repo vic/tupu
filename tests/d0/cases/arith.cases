@@ -143,7 +143,7 @@ f scope A B J; f parent 'A R' 'B R' 'J R'; f baseLeq 'b k10 B'; f phi 'p a A b B
 mk loopRows; types; V i0 I64 0; V i1 I64; V i2 I64; V k1 I64 1; V kn I64 1000
 f scope H B L; f parent 'H R' 'B H' 'L B'; f phi 'i1 i0 R i2 L H'; f addOp 'addO i2 i1 k1 B'; f baseBelow 'i1 kn B'
 for c in negMin negOk addChainBad quotSigned remShift addJoin; do a $c; done
-verdict rows loopRows '' rows
+relrows rows loopRows '' rows bounded   # ruling S92: the relation `bounded`, selected by name (the verdict kind selects reject)
 a quotSigned -MMUTANT_QUOTNEG
 a remSigned -MMUTANT_REMNEG
 a remShift -MMUTANT_REMLOW

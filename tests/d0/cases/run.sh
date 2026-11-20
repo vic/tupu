@@ -68,7 +68,7 @@ if [ -n "${COVER:-}" ]; then : > "$W/res.$i"; else
       awk -F"\t" '$1 != cur { cur = $1; printf "--------------- %s ", cur } { row = substr($0, length($1) + 2) } row != "" { printf "%s ", row }' | tr "\t" "/"   # ruling S84: blocks by relation name, rows by bytes
   else
     $SOUFFLE ${mut:+"$mut"} -F "$W/$cas" "../${file:-$fam}.dl" > "$W/out.$i" 2> "$W/err.$i" || printf "SOUFFLE-FAILED "
-    awk "/^====/ { n++; next } n == 1 { print }" "$W/out.$i" | sort | tr "\t\n" "/ "
+    awk -v want=reject "/^---------------\$/ { getline name; cur=name; next } /^===============\$/ { inrows = !inrows; next } inrows && cur == want { print }" "$W/out.$i" | sort | tr "\t\n" "/ "   # ruling S92: the relation reject is selected by name, never by position
     tr "\n" " " < "$W/err.$i"
   fi
   echo

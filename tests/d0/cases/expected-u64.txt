@@ -4,7 +4,7 @@
 # Same line form as expected.txt; constants scale with the width (U8 255 -> U64 18446744073709551615).
 u64 addOver : addO/overflow-unproved       # x unrestricted, a = x + 1
 u64 addGuard :                             # x < 18446744073709551615, a = x + 1
-u64 addChainBad : addB/overflow-unproved   # x < 18446744073709551615 - 59, a = x + 50, b = a + 10
+u64 addChainBad : addB/overflow-unproved   # x < 18446744073709551615 - 55, a = x + 50, b = a + 10
 u64 guard2p32 : rd/index-unproved          # i < 4294967296 against an array of 5
 u64 guard2p64 : rd/index-unproved          # i < 18446744073709551615 against an array of 5
 u64 guard4 :                               # i < 4 against an array of 5

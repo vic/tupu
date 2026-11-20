@@ -186,9 +186,13 @@ owes(h, "handle-on-marker") :- handleSite(h, _).    // ruling S68: a handle of a
 .decl contentRead(p: Point, c: Value)                                  // an element read of the container c at p: a field or element read that reaches a held object, a move or return of c (S34)
 .decl stateAddress(a: Value)                                          // the address of a handler state
 .decl addressUse(a: Value, role: AddressRole)                         // a use of that address
-.input contentRead, callOf, callArg, param, returnOf, handleNest, overwrite, alias, sizeClass, elementWrite, staticObject, arrayLen, access, fillOp, handleCarrying, externParam, externSummary, stateAddress, addressUse
+.decl writeVia(o: Operation, b: Value)                                  // the element write o goes through the binder b (ruling S71)
+.decl argVia(o: Operation, k: number, b: Value)                        // the k-th argument of the call o is the binder b (ruling S71)
+.decl ownerName(b: Value, v: Value)                                     // the binder b owns the object v at its allocation (ruling S71)
+.input contentRead, callOf, callArg, param, returnOf, handleNest, overwrite, alias, sizeClass, elementWrite, staticObject, arrayLen, access, fillOp, handleCarrying, externParam, externSummary, stateAddress, addressUse, writeVia, argVia, ownerName
 owes(v, "region-escape") :- alloc(v, _, _).
 owes(v, "moved-twice") :- alloc(v, _, _).
+owes(v, "shared-write") :- alloc(v, _, _).                // ruling S71: one subject per object
 owes(v, "owner-differs-by-path") :- alloc(v, _, _).
 owes(v, "dead-retained") :- alloc(v, _, _).
 owes(v, "use-after-free") :- alloc(v, _, _).

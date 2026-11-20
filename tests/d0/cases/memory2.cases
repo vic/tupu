@@ -139,3 +139,30 @@ mq growRealloc -MMUTANT_NOCONSUMEDKILL
 mq growOk -MMUTANT_NOCONSUMEMOVE
 ro growFailedOk -MMUTANT_NOREGAINLOCAL freeAtExit
 mq growFailedReturn -MMUTANT_NOREGAINMOVED
+
+# ruling S71: one writer per object. a owns the object v, b is an alias of it; p2 writes, p3 reads. Points p1..p4, v read at p4.
+sw() { m5 "$1"; f heap h; f alloc 'v h p1'; f next 'p1 p2' 'p2 p3' 'p3 p4'; f use 'p4 v'; f exit p4; }
+sw sharedOne; f ownerName 'a v'; f writeVia 'w1 a'; f elementWrite 'w1 v p2'; f binderRead 'a p3'
+sw sharedLater; f ownerName 'a v'; f alias 'b v'; f writeVia 'w1 a'; f elementWrite 'w1 v p2'; f binderRead 'b p3'
+sw sharedBefore; f ownerName 'a v'; f alias 'b v'; f writeVia 'w1 a'; f elementWrite 'w1 v p3'; f binderRead 'b p2'
+sw sharedTwo; f ownerName 'a v'; f alias 'b v'; f writeVia 'w1 a' 'w2 b'; f elementWrite 'w1 v p2' 'w2 v p3'
+# the call oc at p2 overwrites the elements of its first parameter (summary of f1); the callee stands at pf1
+swc() { sw "$1"; f entry pf1; f operation 'oc Call p2 R' 'of1 Over pf1 R'; f operationOf 'oc g1' 'of1 f1'; f callOf 'oc f1 Normal'; f callArg 'oc 0 v'; f param 'f1 0 x'; f overwrite 'pf1 x'; f ownerName 'a v'; f argVia 'oc 0 a'; }
+swc sharedCall; f alias 'b v'; f binderRead 'b p3'
+swc sharedCallOk; f binderRead 'a p3'
+# the read of b stands on a branch that the facts decide never to take (as flow.cases brLtTrue): an unreachable read counts for nothing
+m5 sharedDead; f heap h; f alloc 'v h p1'; f scope R T F; f parent 'T R' 'F R'; f value x y; f baseBelow 'x y R'
+f next 'p1 pt' 'p1 pf' 'pt pj' 'pf pj'; f operation 'c Branch p1 R' 'ot Work pt T' 'of Work pf F' 'oj Work pj R'
+f condition 'c x Less y T F'; f trueEdge 'c pt'; f falseEdge 'c pf'; f use 'pj v'; f exit pj
+f ownerName 'a v'; f alias 'b v'; f writeVia 'w1 a'; f elementWrite 'w1 v p1'; f binderRead 'b pf'
+for x in sharedOne sharedLater sharedBefore sharedTwo sharedCall sharedCallOk sharedDead; do mq $x; done
+mq sharedOne -MMUTANT_SAMENAME
+mq sharedLater -MMUTANT_NOLATERREAD
+mq sharedCall -MMUTANT_NOCALLWRITE
+mq sharedTwo -MMUTANT_NOWRITEWRITE
+mq sharedBefore -MMUTANT_ORDERANY
+mq sharedLater -MMUTANT_NOALIASNAME
+mq sharedLater -MMUTANT_NOOWNERNAME
+mq sharedLater -MMUTANT_NOELEMWRITE
+mq sharedLater -MMUTANT_ANYSHARED
+mq sharedDead -MMUTANT_NOREACHREAD
