@@ -1,0 +1,9 @@
+program	code
+unboundHead	rule-unsafe
+unboundNegation	rule-unsafe
+unboundComparison	rule-unsafe
+negationCycle	negation-cycle
+negationSelf	negation-cycle
+relationArity	relation-arity
+unknownRelation	unresolved-name
+stratifiedOk	accepted
