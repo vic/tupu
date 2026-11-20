@@ -37,6 +37,7 @@ typedef struct Engine {
   bool prov;
   /* execution state */
   I128 *vars;
+  uint8_t *kbuf; /* packed index key scratch */
   I128 *scratch, *hv, *cells; /* one row of cells each: lookup keys, head rows, program facts and replay */
   uint32_t *body;
   RelRange *rr;

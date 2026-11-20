@@ -28,9 +28,12 @@ void table_free(Table *t) {
     Index *ix = t->idx[i];
     free(ix->cols);
     free(ix->hash);
-    free(ix->first);
+    for (uint32_t b = 0; b < ix->nbk; b++) free(ix->bks[b].blk);
+    free(ix->bks);
+    free(ix->keys);
+    free(ix->fcols);
+    free(ix->bk);
     free(ix->used);
-    free(ix->next);
     free(ix);
   }
   free(t->idx);
@@ -55,12 +58,6 @@ uint64_t hash_cells(const Table *t, const uint32_t *cols, uint32_t nb, const I12
 static uint64_t hash_vals_all(const Table *t, const I128 *vals) {
   uint64_t acc = 0;
   for (int c = 0; c < t->ncols; c++) acc = fold_cell(acc, t->kind[c], vals[c]);
-  return acc;
-}
-
-static uint64_t hash_row(const Table *t, const uint32_t *cols, uint32_t nb, uint32_t row) {
-  uint64_t acc = 0;
-  for (uint32_t i = 0; i < nb; i++) acc = fold_cell(acc, t->kind[cols[i]], tcell(t, (int)cols[i], row));
   return acc;
 }
 
@@ -203,7 +200,16 @@ Status table_add(Table *t, uint64_t h, const I128 *vals, Origin org, uint32_t re
   return STATUS_OK;
 }
 
-/* ---- indexes ---- */
+/* ---- covering indexes (S102) ---- */
+static size_t cell_bytes(const Table *t, uint32_t c) { return t->kind[c] == BASE_SYMBOL ? sizeof(uint32_t) : sizeof(I128); }
+
+static void put_cell(const Table *t, uint32_t c, uint8_t *dst, I128 v) {
+  if (t->kind[c] == BASE_SYMBOL) {
+    uint32_t s = (uint32_t)v;
+    memcpy(dst, &s, sizeof s);
+  } else memcpy(dst, &v, sizeof v);
+}
+
 Status table_index(Table *t, const uint32_t *cols, uint32_t nb, Index **out, Err *e) {
   for (int i = 0; i < t->nidx; i++)
     if (t->idx[i]->nb == nb && memcmp(t->idx[i]->cols, cols, (size_t)nb * sizeof *cols) == 0) {
@@ -220,25 +226,43 @@ Status table_index(Table *t, const uint32_t *cols, uint32_t nb, Index **out, Err
   Index *ix = calloc(1, sizeof *ix);
   if (ix == NULL) return err_oom(e);
   ix->cols = malloc(((size_t)nb + 1) * sizeof *cols);
-  if (ix->cols == NULL) {
+  ix->fcols = malloc(((size_t)t->ncols + 1) * sizeof *cols);
+  if (ix->cols == NULL || ix->fcols == NULL) {
+    free(ix->cols);
+    free(ix->fcols);
     free(ix);
     return err_oom(e);
   }
   memcpy(ix->cols, cols, (size_t)nb * sizeof *cols);
   ix->nb = nb;
+  for (uint32_t c = 0; c < (uint32_t)t->ncols; c++) {
+    bool bound = false;
+    for (uint32_t i = 0; i < nb; i++) bound = bound || cols[i] == c;
+    if (bound) ix->kbytes += cell_bytes(t, c);
+    else {
+      ix->fcols[ix->nf++] = c;
+      ix->fbytes += cell_bytes(t, c);
+    }
+  }
   t->idx[t->nidx++] = ix;
   *out = ix;
   return STATUS_OK;
 }
 
-static Status slots_grow(Index *ix, const Table *t, Err *e) {
-  (void)t;
+static void pack_key(const Table *t, const Index *ix, const I128 *vals_by_col, uint8_t *dst) {
+  for (uint32_t i = 0; i < ix->nb; i++) {
+    put_cell(t, ix->cols[i], dst, vals_by_col[ix->cols[i]]);
+    dst += cell_bytes(t, ix->cols[i]);
+  }
+}
+
+static Status slots_grow(Index *ix, Err *e) {
   size_t ncap = ix->scap == 0 ? 256 : ix->scap * 2;
   uint64_t *nh = malloc(ncap * sizeof *nh);
-  uint32_t *nf = malloc(ncap * sizeof *nf);
+  uint32_t *nk = malloc(ncap * sizeof *nk);
   uint8_t *nu = calloc(ncap, 1);
-  if (nh == NULL || nf == NULL || nu == NULL) {
-    free(nh); free(nf); free(nu);
+  if (nh == NULL || nk == NULL || nu == NULL) {
+    free(nh); free(nk); free(nu);
     return err_oom(e);
   }
   for (size_t i = 0; i < ix->scap; i++) {
@@ -247,56 +271,99 @@ static Status slots_grow(Index *ix, const Table *t, Err *e) {
     while (nu[j]) j = (j + 1) & (ncap - 1);
     nu[j] = 1;
     nh[j] = ix->hash[i];
-    nf[j] = ix->first[i];
+    nk[j] = ix->bk[i];
   }
-  free(ix->hash); free(ix->first); free(ix->used);
-  ix->hash = nh; ix->first = nf; ix->used = nu; ix->scap = ncap;
+  free(ix->hash); free(ix->bk); free(ix->used);
+  ix->hash = nh; ix->bk = nk; ix->used = nu; ix->scap = ncap;
+  return STATUS_OK;
+}
+
+/* append (row id, free cells) to a bucket; growth doubles: new block, copy, free the old one (E3) */
+static Status bucket_push(const Index *ix, Bucket *b, uint32_t row, const Table *t, Err *e) {
+  if (b->n == b->cap) {
+    uint32_t nc = b->cap == 0 ? 4 : b->cap * 2;
+    uint8_t *nb = malloc((size_t)nc * (sizeof(uint32_t) + ix->fbytes) + 1);
+    if (nb == NULL) return err_oom(e);
+    if (b->n > 0) {
+      memcpy(nb, b->blk, (size_t)b->n * sizeof(uint32_t));
+      memcpy(nb + (size_t)nc * sizeof(uint32_t), b->blk + (size_t)b->cap * sizeof(uint32_t), (size_t)b->n * ix->fbytes);
+    }
+    free(b->blk);
+    b->blk = nb;
+    b->cap = nc;
+  }
+  memcpy(b->blk + (size_t)b->n * sizeof(uint32_t), &row, sizeof row);
+  uint8_t *cells = b->blk + (size_t)b->cap * sizeof(uint32_t) + (size_t)b->n * ix->fbytes;
+  for (uint32_t i = 0; i < ix->nf; i++) {
+    put_cell(t, ix->fcols[i], cells, tcell(t, (int)ix->fcols[i], row));
+    cells += cell_bytes(t, ix->fcols[i]);
+  }
+  b->n++;
   return STATUS_OK;
 }
 
 Status index_sync(Index *ix, const Table *t, Err *e) {
   if (ix->synced == t->count) return STATUS_OK;
-  if (ix->next_cap < t->count) {
-    size_t nc = ix->next_cap == 0 ? 1024 : ix->next_cap;
-    while (nc < t->count) nc *= 2;
-    uint32_t *nn = realloc(ix->next, nc * sizeof *nn);
-    if (nn == NULL) return err_oom(e);
-    ix->next = nn;
-    ix->next_cap = nc;
+  I128 *vals = malloc(((size_t)t->ncols + 1) * sizeof *vals);
+  uint8_t *kb = malloc(ix->kbytes + 1);
+  if (vals == NULL || kb == NULL) {
+    free(vals); free(kb);
+    return err_oom(e);
   }
-  for (uint32_t r = ix->synced; r < t->count; r++) {
-    if (ix->scap == 0 || (ix->nslots + 1) * 2 > ix->scap) {
-      if (slots_grow(ix, t, e) != STATUS_OK) return STATUS_ERR;
+  Status st = STATUS_OK;
+  for (uint32_t r = ix->synced; r < t->count && st == STATUS_OK; r++) {
+    for (uint32_t i = 0; i < ix->nb; i++) vals[ix->cols[i]] = tcell(t, (int)ix->cols[i], r);
+    uint64_t h = hash_cells(t, ix->cols, ix->nb, vals);
+    pack_key(t, ix, vals, kb);
+    if (ix->scap == 0 || ((size_t)ix->nbk + 1) * 2 > ix->scap) {
+      st = slots_grow(ix, e);
+      if (st != STATUS_OK) break;
     }
-    uint64_t h = hash_row(t, ix->cols, ix->nb, r);
     size_t i = h & (ix->scap - 1);
-    while (ix->used[i] && ix->hash[i] != h) i = (i + 1) & (ix->scap - 1);
-    if (ix->used[i]) {
-      ix->next[r] = ix->first[i];
-      ix->first[i] = r;
-    } else {
+    uint32_t bi = UINT32_MAX;
+    while (ix->used[i]) {
+      if (ix->hash[i] == h && memcmp(ix->keys + (size_t)ix->bk[i] * ix->kbytes, kb, ix->kbytes) == 0) {
+        bi = ix->bk[i];
+        break;
+      }
+      i = (i + 1) & (ix->scap - 1);
+    }
+    if (bi == UINT32_MAX) {
+      if (ix->nbk == ix->bkcap) {
+        uint32_t nc = ix->bkcap == 0 ? 256 : ix->bkcap * 2;
+        Bucket *nbk = realloc(ix->bks, (size_t)nc * sizeof *nbk);
+        if (nbk == NULL) { st = err_oom(e); break; }
+        ix->bks = nbk;
+        uint8_t *nkeys = realloc(ix->keys, (size_t)nc * ix->kbytes + 1);
+        if (nkeys == NULL) { st = err_oom(e); break; }
+        ix->keys = nkeys;
+        ix->bkcap = nc;
+      }
+      bi = ix->nbk++;
+      memset(&ix->bks[bi], 0, sizeof ix->bks[bi]);
+      memcpy(ix->keys + (size_t)bi * ix->kbytes, kb, ix->kbytes);
       ix->used[i] = 1;
       ix->hash[i] = h;
-      ix->first[i] = r;
-      ix->next[r] = r;
-      ix->nslots++;
+      ix->bk[i] = bi;
     }
+    st = bucket_push(ix, &ix->bks[bi], r, t, e);
     ix->synced = r + 1;
   }
-  return STATUS_OK;
+  free(vals);
+  free(kb);
+  return st;
 }
 
-bool index_find(const Index *ix, uint64_t hash, uint32_t *row) {
-  if (ix->scap == 0) return false;
-  size_t i = hash & (ix->scap - 1);
+const Bucket *index_find(const Index *ix, const Table *t, const I128 *vals_by_col, uint8_t *key) {
+  if (ix->scap == 0) return NULL;
+  uint64_t h = hash_cells(t, ix->cols, ix->nb, vals_by_col);
+  pack_key(t, ix, vals_by_col, key);
+  size_t i = h & (ix->scap - 1);
   while (ix->used[i]) {
-    if (ix->hash[i] == hash) {
-      *row = ix->first[i];
-      return true;
-    }
+    if (ix->hash[i] == h && memcmp(ix->keys + (size_t)ix->bk[i] * ix->kbytes, key, ix->kbytes) == 0) return &ix->bks[ix->bk[i]];
     i = (i + 1) & (ix->scap - 1);
   }
-  return false;
+  return NULL;
 }
 
 /* ---- facts files ---- */

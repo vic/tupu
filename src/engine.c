@@ -217,6 +217,40 @@ static bool match_row(Engine *x, const Step *s, const Table *t, uint32_t row) {
 
 static Status ex_run(Engine *x, const Plan *p, int k, PlanEnd end);
 
+/* first position in the ascending ids[0..n) whose id is >= v */
+static uint32_t lower_bound(const uint32_t *ids, uint32_t n, uint32_t v) {
+  uint32_t a = 0, b = n;
+  while (a < b) {
+    uint32_t m = a + (b - a) / 2;
+    uint32_t id;
+    memcpy(&id, &ids[m], sizeof id);
+    if (id < v) a = m + 1;
+    else b = m;
+  }
+  return a;
+}
+
+/* the free columns of an indexed atom from the bucket cells of one row: binds AS_FREE variables, checks AS_EQ (S102) */
+static bool load_free(Engine *x, const Step *s, const Index *ix, const Table *t, const uint8_t *cells) {
+  for (uint32_t i = 0; i < ix->nf; i++) {
+    uint32_t c = ix->fcols[i];
+    I128 v;
+    if (t->kind[c] == BASE_SYMBOL) {
+      uint32_t u;
+      memcpy(&u, cells, sizeof u);
+      v = (I128)u;
+      cells += sizeof u;
+    } else {
+      memcpy(&v, cells, sizeof v);
+      cells += sizeof v;
+    }
+    const ArgSlot *a = &s->args[c];
+    if (a->k == AS_FREE) x->vars[a->var] = v;
+    else if (a->k == AS_EQ && x->vars[a->var] != v) return false;
+  }
+  return true;
+}
+
 static Status step_atom(Engine *x, const Plan *p, int k, PlanEnd end) {
   const Step *s = &p->steps[k];
   const Table *t = &x->tabs[s->rel];
@@ -242,18 +276,18 @@ static Status step_atom(Engine *x, const Plan *p, int k, PlanEnd end) {
     if (a->k == AS_CONST) key[i] = a->val;
     else if (a->k == AS_BOUND) key[i] = x->vars[a->var];
   }
-  uint32_t row;
   x->probes++;
-  if (!index_find(s->idx, hash_cells(t, s->cols, s->nbound, key), &row)) return STATUS_OK;
-  for (;;) {
-    if (row < hi && row >= lo && match_row(x, s, t, row)) {
-      if (s->atom_pos >= 0) x->body[s->atom_pos] = row;
-      if (ex_run(x, p, k + 1, end) != STATUS_OK) return STATUS_ERR;
-      if (x->found) return STATUS_OK;
-    }
-    uint32_t nr = s->idx->next[row];
-    if (nr == row || nr < lo) break; /* chains run from newer to older rows */
-    row = nr;
+  const Index *ix = s->idx;
+  const Bucket *bk = index_find(ix, t, key, x->kbuf);
+  if (bk == NULL) return STATUS_OK;
+  const uint32_t *ids = bucket_ids(bk);
+  const uint8_t *cells = bucket_cells(bk);
+  uint32_t a = lower_bound(ids, bk->n, lo), b = lower_bound(ids, bk->n, hi); /* the range is a contiguous span of the bucket */
+  for (uint32_t i = b; i-- > a;) { /* newest row first: the order of the chains this replaces, so the first derivation of a row (its provenance) is unchanged */
+    if (!load_free(x, s, ix, t, cells + (size_t)i * ix->fbytes)) continue;
+    if (s->atom_pos >= 0) memcpy(&x->body[s->atom_pos], &ids[i], sizeof(uint32_t));
+    if (ex_run(x, p, k + 1, end) != STATUS_OK) return STATUS_ERR;
+    if (x->found) return STATUS_OK;
   }
   return STATUS_OK;
 }
@@ -272,21 +306,9 @@ static bool neg_exists(Engine *x, const Step *s) {
     if (a->k == AS_CONST) key[i] = a->val;
     else if (a->k == AS_BOUND) key[i] = x->vars[a->var];
   }
-  uint32_t row;
   x->probes++;
-  if (!index_find(s->idx, hash_cells(t, s->cols, s->nbound, key), &row)) return false;
-  for (;;) {
-    bool ok = true;
-    for (int i = 0; i < s->nargs && ok; i++) {
-      const ArgSlot *a = &s->args[i];
-      if (a->k == AS_CONST && tcell(t, i, row) != a->val) ok = false;
-      else if (a->k == AS_BOUND && tcell(t, i, row) != x->vars[a->var]) ok = false;
-    }
-    if (ok) return true;
-    uint32_t nr = s->idx->next[row];
-    if (nr == row) return false;
-    row = nr;
-  }
+  const Bucket *bk = index_find(s->idx, t, key, x->kbuf);
+  return bk != NULL && bk->n > 0; /* the key matched exactly: any row of the bucket is a witness */
 }
 
 static bool compare(CmpOp op, I128 a, I128 b) {
@@ -371,6 +393,7 @@ void engine_close(Engine *x) {
   free(x->tabs);
   free(x->vars);
   free(x->scratch);
+  free(x->kbuf);
   free(x->hv);
   free(x->cells);
   free(x->body);
@@ -400,6 +423,7 @@ Status engine_open(Engine *x, Program *p, const char *facts_dir, uint64_t budget
   x->ncols_max = maxcols;
   x->scratch = malloc((maxcols + 1) * sizeof *x->scratch);
   x->hv = malloc((maxcols + 1) * sizeof *x->hv);
+  x->kbuf = malloc((maxcols + 1) * sizeof(I128));
   x->cells = malloc((maxcols + 1) * sizeof *x->cells);
   if (x->scratch == NULL || x->hv == NULL || x->cells == NULL) return err_oom(e);
   if (plan_program(p, &x->strata, x->tabs, &x->naive, &x->delta, e) != STATUS_OK) return STATUS_ERR;
@@ -516,9 +540,10 @@ static Status worker_init(Worker *wk, const Engine *g) {
   wk->w.body = calloc(g->natoms_max + 1, sizeof *wk->w.body);
   wk->w.scratch = malloc(nc * sizeof *wk->w.scratch);
   wk->w.hv = malloc(nc * sizeof *wk->w.hv);
+  wk->w.kbuf = malloc(nc * sizeof(I128));
   wk->w.cells = NULL;
   wk->w.derivations = wk->w.rows_derived = wk->w.probes = 0;
-  wk->ok = wk->w.vars && wk->w.body && wk->w.scratch && wk->w.hv;
+  wk->ok = wk->w.vars && wk->w.body && wk->w.scratch && wk->w.hv && wk->w.kbuf;
   return wk->ok ? STATUS_OK : STATUS_ERR;
 }
 
@@ -527,6 +552,7 @@ static void worker_free(Worker *wk) {
   free(wk->w.body);
   free(wk->w.scratch);
   free(wk->w.hv);
+  free(wk->w.kbuf);
 }
 
 static void run_job(Engine *w, Job *j) {
