@@ -1,20 +1,24 @@
 #!/bin/sh
-# bench BIN PROGRAM.dl FACTS_DIR: 3 runs; per run wall (s), instructions:u, cache-misses, page-faults (perf stat),
-# peak RSS (KiB), minor and major faults (GNU time); prints the median of each plus load and CPU model (S79).
-# Output goes to /dev/null (writing cost counts, the same for every engine). Instructions below 100000: inert, exit 3.
+# bench NAME PROGRAM.dl FACTS_DIR [BIN]: hyperfine (-N, 1 warmup, 5 runs) on the release build; the row takes the median of
+# wall time, peak resident set, instructions and cache misses from bench/out/NAME.json. Page faults come from one extra
+# `perf stat` run; where perf does not work the row says `page-faults: not measured`. Each row keeps load and CPU model.
+# An instruction count below 100000 is an inert bench: the row is refused (exit 3).
 set -u
-BIN=$1; PROG=$2; FACTS=$3
-T=${TMPDIR:-/tmp}/tupu-bench.$$; mkdir -p "$T"
-i=1
-while [ $i -le 3 ]; do
-  perf stat -x, -e instructions:u,cache-misses,page-faults -o "$T/perf.$i" -- \
-    time -f '%e %M %R %F' -o "$T/time.$i" timeout 120 "$BIN" -F "$FACTS" -D - "$PROG" > /dev/null 2>&1
-  i=$((i+1))
-done
-med() { sort -n | sed -n 2p; }
-pc() { for i in 1 2 3; do grep -E "$1" "$T/perf.$i" | cut -d, -f1; done | med; }
-col() { for i in 1 2 3; do tail -1 "$T/time.$i" | cut -d' ' -f"$1"; done | med; }
-ins=$(pc instructions)
-echo "wall_s=$(col 1) instructions=${ins:-0} cache_misses=$(pc cache-misses) perf_page_faults=$(pc page-faults) peak_rss_kib=$(col 2) minor_faults=$(col 3) major_faults=$(col 4) load=\"$(cut -d' ' -f1-3 /proc/loadavg)\" cpu=\"$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ //')\""
-rm -rf "$T"
-if [ "${ins:-0}" -lt 100000 ]; then echo "INERT BENCH: instruction counter ${ins:-0}" >&2; exit 3; fi
+NAME=$1; PROG=$2; FACTS=$3; BIN=${4:-build/tupu}
+OUT=bench/out; mkdir -p "$OUT"
+mcpp -e utf8 -W0 "$PROG" > "$OUT/$NAME.dl" 2> /dev/null || { echo "bench $NAME: mcpp failed" >&2; exit 2; }
+hyperfine -N --warmup 1 --runs 5 --export-json "$OUT/$NAME.json" "$BIN -F $FACTS -D - $OUT/$NAME.dl" > /dev/null 2>&1 \
+  || { echo "bench $NAME: hyperfine failed" >&2; exit 2; }
+med() { awk -v key="$1" '
+  $0 ~ "\"" key "\": *\\{" { cur = 1; next }
+  cur && /"median":/ { gsub(/[^0-9.eE+-]/, "", $2); print $2; exit }' "$OUT/$NAME.json"; }
+wall=$(med time_wall_clock); rss=$(med memory_peak_resident); ins=$(med instructions); cm=$(med cache_misses)
+pf="page-faults: not measured"
+if perf stat -e page-faults -x, -o "$OUT/$NAME.pf" -- "$BIN" -F "$FACTS" -D - "$OUT/$NAME.dl" > /dev/null 2>&1; then
+  n=$(grep -m1 page-faults "$OUT/$NAME.pf" | cut -d, -f1)
+  case $n in ''|*[!0-9]*) ;; *) pf="page-faults: $n" ;; esac
+fi
+rm -f "$OUT/$NAME.pf"
+echo "bench $NAME wall_s=${wall:-?} peak_rss_bytes=${rss:-?} instructions=${ins:-?} cache_misses=${cm:-?} $pf load=\"$(cut -d' ' -f1-3 /proc/loadavg)\" cpu=\"$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ //')\"" | tee -a "$OUT/rows.txt"
+case ${ins:-0} in ''|*[!0-9]*) ins_int=0 ;; *) ins_int=${ins%%.*} ;; esac
+if [ "${ins_int:-0}" -lt 100000 ]; then echo "INERT BENCH: instructions ${ins:-?} below 100000" >&2; exit 3; fi

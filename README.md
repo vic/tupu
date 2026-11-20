@@ -32,7 +32,7 @@ Typed `.decl` relations with `symbol` and `number` columns, subtypes and unions,
 Early: the engine is being written now. Every change is checked against Soufflé, on Soufflé's own tests and on the rule suite of the Stigi project, and measured against Soufflé and FlowLog for time and memory. The goal is to beat both; the numbers will be here once we have them.
 
 ```console
-$ nix-shell
+$ nix develop
 $ just build
 $ just test
 ```

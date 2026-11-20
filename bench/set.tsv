@@ -1,0 +1,4 @@
+pointsto	tests/o1/example/pointsto/pointsto.dl	tests/o1/example/pointsto
+tc	tests/o1/example/tc/tc.dl	tests/o1/example/tc/facts
+andersen	tests/o1/example/andersen/andersen.dl	tests/o1/example/andersen/facts
+rsg	tests/o1/example/rsg/rsg.dl	tests/o1/example/rsg
