@@ -138,6 +138,8 @@ static Status table_grow(Table *t, Err *e) {
   return STATUS_OK;
 }
 
+uint64_t table_hash_row(const Table *t, const I128 *vals) { return hash_vals_all(t, vals); }
+
 bool table_contains(const Table *t, const I128 *vals) {
   if (t->dcap == 0) return false;
   size_t i = hash_vals_all(t, vals) & (t->dcap - 1);

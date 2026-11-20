@@ -46,6 +46,7 @@ void table_free(Table *t);
 Status table_add(Table *t, const I128 *vals, Origin org, uint32_t ref, uint32_t round, const uint32_t *body, int nbody,
                  bool *added, Err *e);
 bool table_contains(const Table *t, const I128 *vals);
+uint64_t table_hash_row(const Table *t, const I128 *vals); /* the hash of the dedup set (E5) over all columns */
 
 /* hash of the cells at `cols` (ascending) taken from vals_by_col[column] */
 uint64_t hash_cells(const Table *t, const uint32_t *cols, uint32_t nb, const I128 *vals_by_col);

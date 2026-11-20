@@ -19,6 +19,9 @@ typedef struct {
   size_t nvals, vcap;
   uint32_t *bodies;
   size_t nbodies, bcap;
+  uint32_t *hs; /* F1: open-addressing set of the rows this job buffered: entry index per slot, one used byte per slot, load factor 1/2 */
+  uint8_t *hu;
+  size_t hcap;
 } Buf;
 
 typedef enum { END_HEAD, END_AGG } PlanEnd;

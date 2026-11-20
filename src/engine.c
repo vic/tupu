@@ -53,6 +53,56 @@ static Status ex_eval(Engine *x, const Expr *e, I128 *out) {
   return STATUS_OK;
 }
 
+/* F1: is this row already buffered by the running job? A job has one rule, so one head relation: the rows compare cell by cell. */
+static bool jobset_has(const Engine *x, const Table *ht, const I128 *vals, int nv, size_t *slot_out) {
+  const Buf *b = &x->buf;
+  if (b->hcap == 0) {
+    *slot_out = 0;
+    return false;
+  }
+  size_t i = table_hash_row(ht, vals) & (b->hcap - 1);
+  while (b->hu[i]) {
+    const I128 *o = b->vals + b->e[b->hs[i]].voff;
+    bool eq = true;
+    for (int c = 0; c < nv && eq; c++) eq = o[c] == vals[c];
+    if (eq) return true;
+    i = (i + 1) & (b->hcap - 1);
+  }
+  *slot_out = i;
+  return false;
+}
+
+static Status jobset_add(Engine *x, const Table *ht, uint32_t entry, int nv) {
+  Buf *b = &x->buf;
+  if (b->hcap == 0 || (size_t)(entry + 1) * 2 > b->hcap) {
+    size_t nc = b->hcap == 0 ? 1024 : b->hcap * 2;
+    uint32_t *ns = malloc(nc * sizeof *ns);
+    uint8_t *nu = calloc(nc, 1);
+    if (ns == NULL || nu == NULL) {
+      free(ns);
+      free(nu);
+      return err_oom(x->err);
+    }
+    for (uint32_t k = 0; k < entry; k++) {
+      size_t j = table_hash_row(ht, b->vals + b->e[k].voff) & (nc - 1);
+      while (nu[j]) j = (j + 1) & (nc - 1);
+      nu[j] = 1;
+      ns[j] = k;
+    }
+    free(b->hs);
+    free(b->hu);
+    b->hs = ns;
+    b->hu = nu;
+    b->hcap = nc;
+  }
+  size_t j = table_hash_row(ht, b->vals + b->e[entry].voff) & (b->hcap - 1);
+  while (b->hu[j]) j = (j + 1) & (b->hcap - 1);
+  b->hu[j] = 1;
+  b->hs[j] = entry;
+  (void)nv;
+  return STATUS_OK;
+}
+
 static Status buf_push(Engine *x, uint32_t rel, uint32_t rule, const I128 *vals, int nv, const uint32_t *body, int nb) {
   Buf *b = &x->buf;
   if (b->n == b->cap) {
@@ -110,8 +160,12 @@ static Status emit_head(Engine *x) {
   x->derivations++;
   const Table *ht = &x->tabs[r->head.rel];
   if (table_contains(ht, hv)) return STATUS_OK;
+  size_t dummy;
+  if (jobset_has(x, ht, hv, r->head.nargs, &dummy)) return STATUS_OK;
   x->rows_derived++;
-  return buf_push(x, (uint32_t)r->head.rel, (uint32_t)r->index, hv, r->head.nargs, x->body, x->prov ? x->cur->natoms : 0);
+  uint32_t entry = (uint32_t)x->buf.n;
+  if (buf_push(x, (uint32_t)r->head.rel, (uint32_t)r->index, hv, r->head.nargs, x->body, x->prov ? x->cur->natoms : 0) != STATUS_OK) return STATUS_ERR;
+  return jobset_add(x, ht, entry, r->head.nargs);
 }
 
 static void range_of(const Engine *x, const Step *s, uint32_t *lo, uint32_t *hi) {
@@ -467,6 +521,11 @@ static void run_job(Engine *w, Job *j) {
   w->buf = j->buf;
   j->st = ex_run(w, &j->v->plan, 0, END_HEAD);
   j->buf = w->buf;
+  free(j->buf.hs); /* F1: the job set is private to the job; the merge dedups across jobs */
+  free(j->buf.hu);
+  j->buf.hs = NULL;
+  j->buf.hu = NULL;
+  j->buf.hcap = 0;
 }
 
 static void *pool_main(void *arg) {
