@@ -1,0 +1,5 @@
+.decl b(x: number)
+.decl a(x: number)
+b(1).
+a(x) :- b(x), x = "s".
+.output a

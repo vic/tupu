@@ -8,7 +8,8 @@ E=${TMPDIR:-/tmp}/tupu.err.$$
 pass=0; fail=0
 for d in tests/c0/*/; do
   name=$(basename "$d")
-  out=$(timeout 1 "$BIN" -F "$d" -D - "$d/prog.dl" 2> "$E"); st=$?
+  extra=$(cat "$d/args" 2>/dev/null || true)
+  out=$(timeout 1 "$BIN" -F "$d" -D - $extra "$d/prog.dl" 2> "$E"); st=$?
   err=$(cat "$E")
   if [ -f "$d/expected.out" ]; then
     if [ "$st" = 0 ] && [ "$out" = "$(cat "$d/expected.out")" ]; then r=ok; else r=FAIL; fi

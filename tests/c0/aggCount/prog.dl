@@ -1,0 +1,11 @@
+.decl e(x: number)
+.decl c(n: number)
+.decl m(n: number)
+.decl z(n: number)
+e(1). e(2). e(3).
+c(n) :- n = count : { e(_) }.
+m(n) :- n = max x : { e(x) }.
+z(n) :- n = max x : { e(x), x > 9 }.
+.output c
+.output m
+.output z

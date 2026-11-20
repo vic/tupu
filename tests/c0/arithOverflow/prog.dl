@@ -1,0 +1,5 @@
+.decl n(x: number)
+.decl m(x: number)
+n(170141183460469231731687303715884105727).
+m(y) :- n(x), y = x + 1.
+.output m

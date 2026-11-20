@@ -1,0 +1,5 @@
+.decl n(x: number)
+.decl m(x: number)
+n(0).
+m(y) :- n(x), y = 1 / x.
+.output m

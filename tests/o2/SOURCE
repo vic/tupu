@@ -1,0 +1,2 @@
+Souffle 2.5 tests/semantic/{rel_stratification,rel_stratification2}; same source as tests/o1/SOURCE
+Expected code: negation-cycle (datalog-engine.md O2). tests/o1/example/dominance is an O2 case: parse (S81).

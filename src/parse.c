@@ -474,7 +474,7 @@ static Status parse_decl(Parser *x) {
     }
   }
   if (expect(x, T_RPAREN, "expected )") != STATUS_OK) return STATUS_ERR;
-  if (cur(x)->kind == T_IDENT) return perr(x, "a relation qualifier is not supported");
+  if (cur(x)->kind == T_IDENT && peek(x, 1)->kind != T_LPAREN) return perr(x, "a relation qualifier is not supported");
   return STATUS_OK;
 }
 
