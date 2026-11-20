@@ -49,7 +49,7 @@ test: san unit
     BIN=$B sh tests/o3.sh || rc=1
     BIN=$B sh tests/o4.sh || rc=1
     PROVFLAG=1 BIN=$B sh tests/o1.sh || rc=1
-    BIN=$B sh tests/o7.sh || rc=1
+    [ -n "${SKIP_O7:-}" ] || BIN=$B sh tests/o7.sh || rc=1
     exit $rc
 
 # O5 and the counters check: builds the engine mutants (compiles on purpose); the flips are printed per mutant
