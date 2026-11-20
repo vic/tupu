@@ -1,35 +1,38 @@
 #!/bin/sh
 # The whole gate (rulings S31, S85, S88, S89): every family in fixed order as a fixed list of RANGE slices, one run.sh call
 # per slice under `timeout 60`; the output is concatenated and compared by check.sh with expected.txt and
-# expected-souffle64.txt. A slice that exits 124 is split in two in the list below (never a higher cap) and the split is
+# expected-exact.txt. A slice that exits 124 is split in two in the list below (never a higher cap) and the split is
 # reported. The list of a family must cover the job positions 1..N exactly, where N is the number of its lines in
-# expected.txt plus expected-souffle64.txt, and the queue of the family must have N jobs; otherwise gate.sh stops with a
+# expected.txt plus expected-exact.txt, and the queue of the family must have N jobs; otherwise gate.sh stops with a
 # named message. Prints nothing when the gate is clean (a named message on stdout otherwise).
-# Usage: SOUFFLE=... nix-shell -p mcpp --run 'sh gate.sh'     SLICE_TIMES=FILE appends "family range exit wall" per slice.
+# Usage: SOUFFLE=$(timeout 60 nix build ~/hk/tupu#souffle-compat --no-link --print-out-paths)/bin/souffle sh gate.sh
+#   (ruling S91: the engine is tupu through the shim; SLICE_TIMES=FILE appends "family range exit wall" per slice;
+#   COVERAGE_ONLY=1 runs only the coverage check.)
 D=$(dirname "$0")
 
 # family: the slices, and the expected-line prefixes of the family (the family `rows` is part of arith)
 slices() {
   case $1 in
-    bounds) echo "1-11 12-22 23-32" ;;
-    memory) echo "1-31 32-62 63-93 94-125" ;;
-    arith) echo "${ARITH_SLICES:-1-11 12-22 23-33 34-44 45-55 56-66 67-77}" ;;
-    contracts) echo "1-18 19-36" ;;
-    flow) echo "1-25 26-50" ;;
+    bounds) echo "1-32" ;;
+    memory) echo "1-125" ;;
+    arith) echo "${ARITH_SLICES:-1-39 40-77}" ;;
+    contracts) echo "1-36" ;;
+    flow) echo "1-55" ;;
     capabilities) echo "1-28" ;;
     names) echo "1-36" ;;
-    tests) echo "1-20" ;;
+    tests) echo "1-25" ;;
     types) echo "1-35" ;;
-    stack) echo "1-18" ;;
+    stack) echo "1-30" ;;
     refuse) echo "1-8" ;;
-    corpus) echo "1-30 31-60 61-90 91-110" ;;
+    corpus) echo "1-110" ;;
+    taint) echo "1-18" ;;
   esac
 }
 prefix() { case $1 in arith) echo 'arith|rows' ;; *) echo "$1" ;; esac; }
 lines_of() { # the number of expected lines of a family
-  a=$(grep -cE "^($(prefix "$1")) " "$D/expected.txt"); b=$(grep -v '^#' "$D/expected-souffle64.txt" | grep -cE "^($(prefix "$1")) "); echo $((a + b))
+  a=$(grep -cE "^($(prefix "$1")) " "$D/expected.txt"); b=$(grep -v '^#' "$D/expected-exact.txt" | grep -cE "^($(prefix "$1")) "); echo $((a + b))
 }
-FAMILIES="bounds memory arith contracts flow capabilities names tests types stack refuse corpus"
+FAMILIES="bounds memory arith contracts flow capabilities names tests types stack refuse corpus taint"
 
 # ruling S88: every list covers 1..N exactly, and every queue has N jobs
 for fam in $FAMILIES; do

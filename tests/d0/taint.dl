@@ -1,0 +1,49 @@
+// Speculation masking (ruling S74, S51; emitter.md 6): the decision relations `tainted` and `maskIndex`. The emitter is their
+// only reader, no obligation is owed. A value is tainted when it is derived from a result or an argument of a capability
+// that takes data from outside (`taintSource`: Stigi.File, Stigi.Socket, Stigi.Clock); a mask costs only time, so taint
+// over-approximates: a call argument (a buffer the call fills) and what is written from a tainted value taint the object.
+// An element access whose index is tainted is emitted with a branchless mask (the proof of the index is a separate obligation).
+// Theory: the masking idea of Kocher et al., "Spectre Attacks" (S&P 2019); the Linux `array_index_nospec`.
+// Mutants (cases/taint.cases): MUTANT_NOSOURCERES, MUTANT_NOARGOBJ, MUTANT_NOPROPAGATE, MUTANT_NOOBJECT, MUTANT_NOPHIA,
+// MUTANT_NOPHIB, MUTANT_NOELEMOBJ, MUTANT_NOMASKREAD, MUTANT_NOMASKWRITE, MUTANT_ANYSOURCE.
+#ifndef STIGI_TAINT
+#define STIGI_TAINT
+#include "schema.dl"
+
+.decl tainted(v: Value)
+.decl taintedObject(x: Value)
+.decl maskIndex(o: Operation)
+#ifdef MUTANT_ANYSOURCE
+#define SOURCEOF(c) capabilityOf(c, _)
+#else
+#define SOURCEOF(c) capabilityOf(c, k), taintSource(k)
+#endif
+#ifndef MUTANT_NOSOURCERES
+tainted(v) :- operationCall(o, c, _, _), SOURCEOF(c), result(o, v).
+#endif
+#ifndef MUTANT_NOARGOBJ
+taintedObject(x) :- operationCall(o, c, _, _), SOURCEOF(c), callArg(o, _, x).
+#endif
+#ifndef MUTANT_NOPROPAGATE
+tainted(a) :- operand(o, _, x), tainted(x), result(o, a).
+#endif
+#ifndef MUTANT_NOOBJECT
+tainted(a) :- operand(o, _, x), taintedObject(x), result(o, a).
+#endif
+#ifndef MUTANT_NOPHIA
+tainted(p) :- phi(p, a, _, _, _, _), tainted(a).
+#endif
+#ifndef MUTANT_NOPHIB
+tainted(p) :- phi(p, _, _, b, _, _), tainted(b).
+#endif
+#ifndef MUTANT_NOELEMOBJ
+taintedObject(c) :- elementWrite(o, c, _), operand(o, _, x), tainted(x).
+#endif
+#ifndef MUTANT_NOMASKREAD
+maskIndex(o) :- indexRead(o, i, _, _), tainted(i).
+#endif
+#ifndef MUTANT_NOMASKWRITE
+maskIndex(o) :- indexWrite(o, i, _, _), tainted(i).
+#endif
+.output maskIndex(IO=stdout)
+#endif

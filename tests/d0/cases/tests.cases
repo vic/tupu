@@ -14,7 +14,12 @@ ng negEmpty
 ng negWrong; f negExpect 'n index-unproved'; f negRejects 'n s1 index-unproved' 'n s2 mismatch'; f clearsRule 'rule1 index-unproved'
 ng negForm; f negExpect 'n index-unproved'; f negRejects 'n s1 index-unproved' 'n s2 index-unproved'; f clearsRule 'rule1 index-unproved'
 ng negNoRule; f negExpect 'n index-unproved'; f negRejects 'n s1 index-unproved'
-for x in testOk testFail testLeak testRowOk testDiffer testSame negOk negNotRejected negEmpty negWrong negForm negNoRule; do tv $x; done
+# ruling S73: the arm a1 of a match handles the typed failure FillFailed; it needs a Test under a fault-injecting handler
+fz() { f matchArm 'a1 v FillFailed'; f failureCase FillFailed; }
+ts failOk; fz; f faultReach 't a1'
+ts failNone; fz
+ng failNegTest; fz; f negExpect 'n index-unproved'; f negRejects 'n s1 index-unproved'; f clearsRule 'rule1 index-unproved'; f faultReach 'n a1'
+for x in testOk testFail testLeak testRowOk testDiffer testSame negOk negNotRejected negEmpty negWrong negForm negNoRule failOk failNone failNegTest; do tv $x; done
 tv testFail -MMUTANT_TESTOFF
 tv testLeak -MMUTANT_LEAKOFF
 tv testDiffer -MMUTANT_DIFFEROFF
@@ -23,3 +28,5 @@ tv negWrong -MMUTANT_EXTRAOFF
 tv negForm -MMUTANT_MANYOFF
 tv negNoRule -MMUTANT_NORULEOFF
 tv negEmpty -MMUTANT_NOEXPECTOFF
+tv failNone -MMUTANT_NOREACH
+tv failNegTest -MMUTANT_ANYUNIT

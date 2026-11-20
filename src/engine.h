@@ -48,6 +48,10 @@ typedef struct Engine {
   uint32_t round;
   Acc *acc;
   Err *err;
+  size_t nthreads;
+  size_t nvars_max, ncols_max, natoms_max;
+  int chunk_step; /* S80: the plan step whose range this job cuts, or -1 */
+  uint32_t chunk_lo, chunk_hi;
   ExecMode mode;
   const I128 *target;
   const uint32_t *target_body;
@@ -55,7 +59,7 @@ typedef struct Engine {
   uint64_t derivations, rows_derived, probes, rounds; /* counters of the bench (E-performance) */
 } Engine;
 
-Status engine_open(Engine *x, Program *p, const char *facts_dir, uint64_t budget, bool prov, Err *e);
+Status engine_open(Engine *x, Program *p, const char *facts_dir, uint64_t budget, bool prov, size_t nthreads, Err *e);
 Status engine_eval(Engine *x, Err *e);
 void engine_close(Engine *x);
 /* O6: every row of every output relation derives again from its rule and its body rows against the final relations */

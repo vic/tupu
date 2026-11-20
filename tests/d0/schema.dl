@@ -61,11 +61,13 @@ reject(s, c) :- owes(s, c), !cleared(s, c).
 .decl baseLeq(x: Value, y: Value, s: Scope)             // credit: x <= y from scope s on
 .decl indexRead(o: Operation, i: Value, n: Value, s: Scope)          // element i of an object of length n is read
 .decl indexWrite(o: Operation, i: Value, n: Value, s: Scope)         // element i of an object of length n is written (ruling S67)
+.decl operand(o: Operation, k: number, v: Value)                        // the k-th operand of the operation o is the value v (ruling S74)
+.decl result(o: Operation, v: Value)                                   // the operation o produces the value v (ruling S74)
 .decl leqOwed(o: Operation, x: Value, y: Value, s: Scope, c: Code)   // a stated lessOrEqual fact to prove
 .decl belowOwed(o: Operation, x: Value, y: Value, s: Scope, c: Code)  // a stated below fact to prove
 .input value, scope, parent, lit, u64, valueType, typeRange, typeWidth
 .input addOp, subtractOp, multiplyOp, quotientOp, remainderOp, shiftOp, andOp
-.input phi, baseBelow, baseLeq, indexRead, indexWrite, leqOwed, belowOwed
+.input phi, baseBelow, baseLeq, indexRead, indexWrite, operand, result, leqOwed, belowOwed
 .decl instanceOf(i: Instance, u: Unit)                 // producer: the type checker (the one producer of unit ownership)
 .decl operationOf(o: Operation, i: Instance)            // the operation stands in this instance; exactly one row per operation (S26)
 .decl statesFact(u: Unit, form: FactForm)               // the unit's own text holds a fact group on a safety relation (S21)
@@ -153,9 +155,10 @@ owes(o, "branch-decided") :- matchArm(o, _, _).
 .decl capabilityValueUse(a: Atom, v: Value, role: UseRole)             // a capability value is used
 .decl handleSite(h: Atom, place: Placement)                            // a handle statement
 .decl handleTarget(h: Atom, k: Unit)                                   // the handle statement h installs a handler of the capability unit k (ruling S68)
+.decl taintSource(k: Unit)                                             // a capability unit whose results come from outside: Stigi.File, Stigi.Socket, Stigi.Clock (kernel table, ruling S74)
 .decl capabilityOperation(k: Unit, op: Atom)                           // the capability unit k declares the operation op (ruling S68)
 .decl denyState(d: Atom, k: Atom, c: Value, s: State)                  // atom k of the denial d is at(c, s)
-.input capabilityOf, startState, stopState, stateOf, entryState, exitState, handleRange, join, loopHead, needsCapability, provider, stateRef, capabilityValueUse, handleSite, handleTarget, capabilityOperation, denyState
+.input capabilityOf, startState, stopState, stateOf, entryState, exitState, handleRange, join, loopHead, needsCapability, provider, stateRef, capabilityValueUse, handleSite, handleTarget, capabilityOperation, taintSource, denyState
 owes(o, "op-not-allowed") :- operationCall(o, _, op, _), entryState(op, _).
 owes(c, "capability-not-ended") :- handleRange(c, _, _), capabilityOf(c, _).
 owes(j, "branch-states") :- join(j).
@@ -183,13 +186,15 @@ owes(h, "handle-on-marker") :- handleSite(h, _).    // ruling S68: a handle of a
 .decl handleCarrying(t: TypeName)                                     // the type holds a handle
 .decl externParam(d: Instance, k: number)                             // a handle-carrying parameter of a body-less extern
 .decl externSummary(d: Instance)                                      // the extern contract states its summary
+.decl bodylessExtern(d: Instance)                                     // the instance is a body-less extern (ruling S72)
+.decl externStack(d: Instance, bytes: number)                         // the worst-case stack bytes of the body-less extern, a row of the extern table (ruling S72)
 .decl contentRead(p: Point, c: Value)                                  // an element read of the container c at p: a field or element read that reaches a held object, a move or return of c (S34)
 .decl stateAddress(a: Value)                                          // the address of a handler state
 .decl addressUse(a: Value, role: AddressRole)                         // a use of that address
 .decl writeVia(o: Operation, b: Value)                                  // the element write o goes through the binder b (ruling S71)
 .decl argVia(o: Operation, k: number, b: Value)                        // the k-th argument of the call o is the binder b (ruling S71)
 .decl ownerName(b: Value, v: Value)                                     // the binder b owns the object v at its allocation (ruling S71)
-.input contentRead, callOf, callArg, param, returnOf, handleNest, overwrite, alias, sizeClass, elementWrite, staticObject, arrayLen, access, fillOp, handleCarrying, externParam, externSummary, stateAddress, addressUse, writeVia, argVia, ownerName
+.input contentRead, callOf, callArg, param, returnOf, handleNest, overwrite, alias, sizeClass, elementWrite, staticObject, arrayLen, access, fillOp, handleCarrying, externParam, externSummary, stateAddress, addressUse, writeVia, argVia, ownerName, bodylessExtern, externStack
 owes(v, "region-escape") :- alloc(v, _, _).
 owes(v, "moved-twice") :- alloc(v, _, _).
 owes(v, "shared-write") :- alloc(v, _, _).                // ruling S71: one subject per object
@@ -203,7 +208,7 @@ owes(o, "write-unread") :- elementWrite(o, _, _).
 owes(o, "write-to-static") :- elementWrite(o, _, _).
 owes(v, "capacity-unused") :- arrayLen(v, _).
 owes(o, "fill-shares-handle") :- fillOp(o, _).
-owes(d, "extern-summary-missing") :- externParam(d, _).
+owes(d, "extern-summary-missing") :- bodylessExtern(d).   // ruling S72: replaces the owes on externParam
 owes(a, "handler-state-escape") :- stateAddress(a).
 
 // ---- names, types, tests, rules, stack (producers: the names phase, the type checker, the door, the extractor) ----
@@ -247,6 +252,8 @@ owes(a, "handler-state-escape") :- stateAddress(a).
 .decl externDecl(d: Atom)
 .decl externCarriesFacts(d: Atom)
 .decl testGot(t: Unit, v: symbol)
+.decl failureCase(k: Atom)                                             // a typed failure case: FillFailed, GrowFailed, every failure case of a kernel capability operation (kernel table, ruling S73)
+.decl faultReach(t: Unit, o: Operation)                                // the Test t, run under a fault-injecting handler, reached the arm o (producer: the door, ruling S73)
 .decl testWant(t: Unit, v: symbol)
 .decl emittedRun(t: Unit)
 .decl emittedGot(t: Unit, v: symbol)
@@ -261,9 +268,10 @@ owes(a, "handler-state-escape") :- stateAddress(a).
 .decl depthBound(i: Instance, limit: number)
 .decl rootInstance(i: Instance)
 .decl stackBudget(bytes: number)
+.decl signalReserve(bytes: number)                                     // the stack bytes the profile keeps for a signal handler, beside stackBudget (ruling S72)
 .input unit, unitName, binderName, reference, resolves, visibleFrom, public, mainUnit, sameNamespace, edge, root, imageMode, kernelOnly, ruleHeadKernel, underStigi, externRef, handlerUnit
 .input typeOf, expects, needsInference, inferredType, arityUse, lengthTerm, linearForm, typeDecl, inlineField, elementField, evaluation, matchOver, enumCase, armCase, wildcardArm, patternDepth, assignTo, isVar, handlerImpl, sigOf, externDecl, externCarriesFacts
-.input testGot, testWant, emittedRun, emittedGot, testRow, negExpect, negRejects, clearsRule, kernelRule, ruleReads, userRelation, frameBytes, depthBound, rootInstance, stackBudget
+.input testGot, failureCase, faultReach, testWant, emittedRun, emittedGot, testRow, negExpect, negRejects, clearsRule, kernelRule, ruleReads, userRelation, frameBytes, depthBound, rootInstance, stackBudget, signalReserve
 owes(r, "unresolved-name") :- reference(r, _).
 owes(r, "private-reference") :- resolves(r, _).
 owes(u, "duplicate") :- unitName(u, _).
@@ -291,6 +299,7 @@ owes(a, "assign-val") :- assignTo(a, _).
 owes(h, "handler-signature") :- handlerImpl(h, _).
 owes(d, "extern-forges-facts") :- externDecl(d).
 owes(t, "test-failed") :- unit(t, "Test").
+owes(o, "failure-path-untested") :- matchArm(o, _, k), failureCase(k).   // ruling S73
 owes(t, "test-evaluator-differs") :- emittedRun(t).
 owes(t, "test-leaks-capability") :- unit(t, "Test").
 owes(n, "negtest-not-rejected") :- unit(n, "NegTest").

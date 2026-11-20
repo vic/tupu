@@ -1,3 +1,5 @@
 build/
 result
 bench/out/
+bench/comp/
+bench/data/

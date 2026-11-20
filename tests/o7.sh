@@ -8,7 +8,7 @@ REAL_PATH=$PATH; export REAL_PATH
 ROOT=$(pwd)
 PATH=$ROOT/tests/bin:$PATH; export PATH
 O=$(mktemp -d "${TMPDIR:-/tmp}/o7.XXXXXX"); trap 'rm -rf "$O"' EXIT
-fams=${*:-bounds memory arith contracts flow capabilities names tests types stack corpus}
+fams=${*:-bounds memory arith contracts flow capabilities names tests types stack corpus taint}
 rc=0
 slice() { # family range seed outfile
   ( cd tests/d0/cases && RANGE=$2 TUPU=$ROOT/$BIN SOUFFLE=$ROOT/tests/souffle-shim.sh TUPU_SHUFFLE=$3 nice -n 10 timeout 60 sh run.sh "$1" 2>/dev/null >> "$4" )

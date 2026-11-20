@@ -56,7 +56,7 @@ if [ -n "${COVER:-}" ]; then : > "$W/res.$i"; else
   printf "%s %s %s: " "$fam" "$cas" "$mut"
   if [ "$kind" = refuse ]; then
     $SOUFFLE "refuse/$cas.dl" -D - > "$W/out.$i" 2>&1 || true
-    msg=$(grep -m1 "^Error" "$W/out.$i" | sed "s/ in file .* at line [0-9]*//")
+    msg=$(grep -m1 "^Error" "$W/out.$i" | sed "s/^Error: rejected \([a-z-]*\) .*/\1/")   # ruling S91: the stigi code of tupu
     printf "%s " "${msg:-accepted}"
   elif [ "$kind" = rel ]; then
     $SOUFFLE ${mut:+"$mut"} -F "$W/$cas" "../${file:-$fam}.dl" > "$W/out.$i" 2> "$W/err.$i" || printf "SOUFFLE-FAILED "
@@ -99,16 +99,7 @@ if [ -z "$mut" ] && [ "$kind" != refuse ] && [ "$kind" != run ] && { [ "$kind" !
   fi
 fi
 EOF
-# Width probe: a 32-bit Souffle wraps this literal and must not be used for arithmetic cases.
-cat > "$W/width.dl" <<'EOF'
-.decl wide(n: number)
-wide(4294967296).
-.decl ok(n: number)
-ok(n) :- wide(n), n > 4294967295.
-.output ok(IO=stdout)
-EOF
-printf "width 64-bit-numbers (1 = yes, 0 = this Souffle refuses numbers of 2^31 or more and wraps its sums): " >&2
-$SOUFFLE "$W/width.dl" 2>&1 | grep -c '^4294967296$' >&2 || true
+# ruling S91: no width probe; the engine is tupu (exact 128-bit numbers), through the shim `~/hk/tupu#souffle-compat`
 
 # helpers for the cases of the later families: f REL 'field field ...' ... appends rows to the case D
 f() { r=$1; shift; for row in "$@"; do printf '%s\n' "$row" | tr ' ' '\t' >> "$D/$r.facts"; done; }
@@ -189,6 +180,7 @@ want types && . ./types.cases
 want stack && . ./stack.cases
 want refuse && . ./refuse.cases
 want corpus && . ./corpus.cases
+want taint && . ./taint.cases
 
 if [ -n "${COUNT:-}" ]; then echo "$q"; exit 0; fi
 # run every queued job (10 at a time) and print the results in queue order

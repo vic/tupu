@@ -9,3 +9,4 @@
 #include "tests.dl"
 #include "types.dl"
 #include "stack.dl"
+#include "taint.dl"

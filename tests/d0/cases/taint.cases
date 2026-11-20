@@ -1,0 +1,30 @@
+# Taint family cases (sourced by run.sh; ruling S74, emitter.md 6). The relation maskIndex is printed. Expected rows are in expected.txt.
+tt() { relrows taint "$1" "${2:-}" taint maskIndex; }
+# kernel table: the capability units whose results come from outside. cap: a capability instance c of the unit K calls the operation op.
+tn() { mk "$1"; f scope R; f taintSource File Socket Clock; f value n; }
+# ruling S74: a byte of a buffer that File.read fills, read as an index (the call argument taints the object)
+tn taintBuffer; f capabilityOf 'c File'; f operationCall 'o1 c read p1'; f callArg 'o1 0 buf'; f operand 'o2 0 buf'; f result 'o2 b'; f indexRead 'o3 b n R'
+# fileValue % n: the result of the call, then an operation on it
+tn taintValue; f capabilityOf 'c File'; f operationCall 'o1 c read p1'; f result 'o1 v'; f operand 'o2 0 v'; f result 'o2 a'; f indexRead 'o3 a n R'
+# a loop counter has no capability in its history: no mask
+tn taintLoop; f operand 'o2 0 i'; f result 'o2 j'; f indexRead 'o3 j n R'
+# a phi of a clock value and a literal, in each order
+tn taintPhiA; f capabilityOf 'c Clock'; f operationCall 'o1 c now p1'; f result 'o1 t'; f phi 'p t S1 k S2 J'; f indexRead 'o3 p n R'
+tn taintPhiB; f capabilityOf 'c Clock'; f operationCall 'o1 c now p1'; f result 'o1 t'; f phi 'p k S1 t S2 J'; f indexRead 'o3 p n R'
+# a tainted value written into a container taints the container; an element read of it is tainted
+tn taintWriteObj; f capabilityOf 'c File'; f operationCall 'o1 c read p1'; f result 'o1 x'; f elementWrite 'ow cc pw'; f operand 'ow 0 x'; f operand 'or 0 cc'; f result 'or y'; f indexRead 'o3 y n R'
+# the index of an element write is masked too
+tn taintWriteIdx; f capabilityOf 'c File'; f operationCall 'o1 c read p1'; f result 'o1 j'; f indexWrite 'ow j n R'
+# the result of a capability that is no taint source (a region) is not tainted
+tn taintNoSource; f capabilityOf 'c Region'; f operationCall 'o1 c tryAllocate p1'; f result 'o1 v'; f indexRead 'o3 v n R'
+for x in taintBuffer taintValue taintLoop taintPhiA taintPhiB taintWriteObj taintWriteIdx taintNoSource; do tt $x; done
+tt taintValue -MMUTANT_NOSOURCERES
+tt taintBuffer -MMUTANT_NOARGOBJ
+tt taintValue -MMUTANT_NOPROPAGATE
+tt taintBuffer -MMUTANT_NOOBJECT
+tt taintPhiA -MMUTANT_NOPHIA
+tt taintPhiB -MMUTANT_NOPHIB
+tt taintWriteObj -MMUTANT_NOELEMOBJ
+tt taintBuffer -MMUTANT_NOMASKREAD
+tt taintWriteIdx -MMUTANT_NOMASKWRITE
+tt taintNoSource -MMUTANT_ANYSOURCE

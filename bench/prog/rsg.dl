@@ -1,0 +1,11 @@
+.type Node <: symbol
+.decl RSG(node1:Node, node2:Node)
+.decl FLAT(node1:Node, node2:Node)
+.decl UP(node1:Node, node2:Node)
+.decl DOWN(node1:Node, node2:Node)
+.input FLAT
+.input UP
+.input DOWN
+.output RSG
+RSG(x,y) :- FLAT(x,y).
+RSG(x,y) :- UP(x,a), RSG(b,a), DOWN(b,y).

@@ -8,30 +8,30 @@ default: build
 # release build, gcc
 build:
     mkdir -p build
-    gcc {{warn}} -O2 -DNDEBUG {{safe}} -o build/tupu {{src}} -lpthread
+    gcc {{warn}} -O2 -DNDEBUG {{safe}} -o build/tupu {{src}} -pthread
 
 clang:
     mkdir -p build
-    clang {{warn}} -O2 -DNDEBUG {{safe}} -o build/tupu-clang {{src}} -lpthread
+    clang {{warn}} -O2 -DNDEBUG {{safe}} -o build/tupu-clang {{src}} -pthread
 
 san:
     mkdir -p build
-    gcc {{warn}} -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all {{safe}} -o build/tupu-san {{src}} -lpthread
+    gcc {{warn}} -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all {{safe}} -o build/tupu-san {{src}} -pthread
 
 # release build with the bench counters printed on stderr (tests/counters.sh, the inert-bench check)
 count:
     mkdir -p build
-    gcc {{warn}} -O2 -DNDEBUG -DTUPU_COUNTERS {{safe}} -o build/tupu-count {{src}} -lpthread
+    gcc {{warn}} -O2 -DNDEBUG -DTUPU_COUNTERS {{safe}} -o build/tupu-count {{src}} -pthread
 
 # one engine mutant (O5, O6): build/tupu-mut-NAME is the release build with -DMUTANT_NAME
 mutant name:
     mkdir -p build
-    gcc {{warn}} -O2 -DNDEBUG -DTUPU_COUNTERS -DMUTANT_{{name}} {{safe}} -o build/tupu-mut-{{name}} {{src}} -lpthread
+    gcc {{warn}} -O2 -DNDEBUG -DTUPU_COUNTERS -DMUTANT_{{name}} {{safe}} -o build/tupu-mut-{{name}} {{src}} -pthread
 
 # unit tests of the library modules (everything except main.c)
 unit:
     mkdir -p build
-    gcc {{warn}} -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all {{safe}} -o build/unit tests/unit.c $(ls src/*.c | grep -v '/main.c$') -lpthread
+    gcc {{warn}} -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all {{safe}} -o build/unit tests/unit.c $(ls src/*.c | grep -v '/main.c$') -pthread
     timeout 10 build/unit
 
 # every oracle on the binary of `nix build` (result/bin/tupu, built once: no test recipe compiles tupu again) and on the san build.
@@ -48,6 +48,8 @@ test: san unit
     BIN=$B sh tests/o2.sh || rc=1
     BIN=$B sh tests/o3.sh || rc=1
     BIN=$B sh tests/o4.sh || rc=1
+    BIN=$B sh tests/o8.sh || rc=1
+    O8_SAN=1 BIN=build/tupu-san sh tests/o8.sh || rc=1
     PROVFLAG=1 BIN=$B sh tests/o1.sh || rc=1
     [ -n "${SKIP_O7:-}" ] || BIN=$B sh tests/o7.sh || rc=1
     exit $rc

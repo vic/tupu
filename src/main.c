@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 typedef struct {
   const char *facts_dir;
@@ -13,17 +14,25 @@ typedef struct {
   const char *program;
   const char *prov_dir;
   uint64_t budget;
+  size_t jobs;
 } Args;
 
 static Status parse_args(int argc, char **argv, Args *a, Err *e) {
-  const char *usage = "tupu -F DIR -D (-|DIR) [-b ROWS] [-P DIR] PROGRAM";
+  const char *usage = "tupu -F DIR -D (-|DIR) [-b ROWS] [-j N] [-P DIR] PROGRAM";
   memset(a, 0, sizeof *a);
   a->budget = 1000000; /* the floor of I4 */
+  long online = sysconf(_SC_NPROCESSORS_ONLN);
+  a->jobs = online < 1 ? 1 : (size_t)online;
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-F") == 0 && i + 1 < argc && a->facts_dir == NULL) a->facts_dir = argv[++i];
     else if (strcmp(argv[i], "-D") == 0 && i + 1 < argc && a->out_target == NULL) a->out_target = argv[++i];
     else if (strcmp(argv[i], "-P") == 0 && i + 1 < argc && a->prov_dir == NULL) a->prov_dir = argv[++i];
-    else if (strcmp(argv[i], "-b") == 0 && i + 1 < argc) {
+    else if (strcmp(argv[i], "-j") == 0 && i + 1 < argc) {
+      char *end;
+      unsigned long long v = strtoull(argv[++i], &end, 10);
+      if (*end != '\0' || end == argv[i] || argv[i][0] == '-' || v < 1 || v > 4096) return err_set(e, CODE_USAGE, NULL, 0, "-j needs a thread count of at least 1");
+      a->jobs = (size_t)v;
+    } else if (strcmp(argv[i], "-b") == 0 && i + 1 < argc) {
       char *end;
       unsigned long long v = strtoull(argv[++i], &end, 10);
       if (*end != '\0' || end == argv[i] || argv[i][0] == '-') return err_set(e, CODE_USAGE, NULL, 0, "-b needs a row count");
@@ -77,7 +86,7 @@ static Status run(const Args *a, Err *e) {
   Status st = parse_program(&prog, text, len, strcmp(a->program, "-") == 0 ? "<stdin>" : a->program, e);
   if (st == STATUS_OK) st = check_program(&prog, e);
   if (st == STATUS_OK) {
-    st = engine_open(&eng, &prog, a->facts_dir, a->budget, a->prov_dir != NULL, e);
+    st = engine_open(&eng, &prog, a->facts_dir, a->budget, a->prov_dir != NULL, a->jobs, e);
     open = true;
   }
   if (st == STATUS_OK) st = engine_eval(&eng, e);

@@ -3,10 +3,24 @@
 // counted `limit` times. In the image the emitter computes `stackNeed`; here Souffle computes the same number with its
 // `max` aggregate and path sums (an oracle only: the engine has no aggregate, datalog-engine.md).
 // Mutants (cases/stack.cases): MUTANT_CYCLEOFF, MUTANT_BOUNDOFF, MUTANT_TAILOFF, MUTANT_LIMITONE, MUTANT_BUDGETOFF,
-// MUTANT_UNFRAMEDOFF, MUTANT_UNBOUNDREACHOFF.
+// MUTANT_UNFRAMEDOFF, MUTANT_UNBOUNDREACHOFF, MUTANT_NOEXTERNFRAME, MUTANT_EXTERNZERO, MUTANT_NORESERVE (ruling S72).
+// Ruling S72: a body-less extern with an `externStack` row is a framed leaf whose frame is its stated bytes; one without is
+// unframed; the root clears `stack-over-budget` only when its need plus the `signalReserve` of the profile fits the budget.
+// The sums of stackNeed stay plain: the numbers are stack bytes, far below the range of Souffle (an oracle only).
 #ifndef STIGI_STACK
 #define STIGI_STACK
 #include "contracts.dl"
+#include "externs.dl"
+
+// the frame of an instance: its own frame, or for a body-less extern its stated stack bytes
+.decl frameOf(i: Instance, bytes: number)
+frameOf(i, b) :- frameBytes(i, b).
+#ifdef MUTANT_NOEXTERNFRAME
+#elif defined(MUTANT_EXTERNZERO)
+frameOf(i, 0) :- bodylessExtern(i), externStack(i, _).
+#else
+frameOf(i, b) :- bodylessExtern(i), externStack(i, b).
+#endif
 
 .decl callEdge(d: Instance, e: Instance)
 .decl callsPlus(d: Instance, e: Instance)
@@ -36,7 +50,7 @@ sccKey(d, ord(d)) :- instanceOf(d, _), !inCycle(d).
 .decl ownCost(k: number, cost: number)
 .decl sccFrames(k: number, frames: number)
 .decl sccLimit(k: number, limit: number)
-sccFrames(k, f) :- sccKey(_, k), f = sum b : { sccKey(m, k), frameBytes(m, b) }.
+sccFrames(k, f) :- sccKey(_, k), f = sum b : { sccKey(m, k), frameOf(m, b) }.
 #ifdef MUTANT_LIMITONE
 sccLimit(k, 1) :- sccKey(d, k), inCycle(d), depthBound(d, _).
 #else
@@ -56,8 +70,8 @@ stackNeed(r, n) :- rootInstance(r), n = max c : { pathCost(r, _, c) }.
 #ifdef MUTANT_UNFRAMEDOFF
 unframed(r) :- rootInstance(r), 1 = 2.
 #else
-unframed(r) :- rootInstance(r), !frameBytes(r, _).
-unframed(r) :- rootInstance(r), callsPlus(r, i), !frameBytes(i, _).
+unframed(r) :- rootInstance(r), !frameOf(r, _).
+unframed(r) :- rootInstance(r), callsPlus(r, i), !frameOf(i, _).
 #endif
 .decl unboundedReach(r: Instance)
 #ifdef MUTANT_UNBOUNDREACHOFF
@@ -69,6 +83,10 @@ unboundedReach(r) :- rootInstance(r), inCycle(r), !depthBound(r, _).
 #ifdef MUTANT_BUDGETOFF
 cleared(r, "stack-over-budget") :- rootInstance(r).
 #else
+#ifdef MUTANT_NORESERVE
 cleared(r, "stack-over-budget") :- stackNeed(r, n), stackBudget(b), n <= b, !unframed(r), !unboundedReach(r).
+#else
+cleared(r, "stack-over-budget") :- stackNeed(r, n), stackBudget(b), signalReserve(s), n + s <= b, !unframed(r), !unboundedReach(r).
+#endif
 #endif
 #endif

@@ -12,6 +12,7 @@
 #ifndef STIGI_MEMORY
 #define STIGI_MEMORY
 #include "capabilities.dl"
+#include "externs.dl"
 
 // ---- summaries across calls (memory.md 6): least fixed point over the call graph ----
 .decl pointInstance(p: Point, i: Instance)
@@ -387,11 +388,6 @@ cleared(v, "capacity-unused") :- arrayLen(v, n), access(v, i, s), upper(i, h, s)
 cleared(o, "fill-shares-handle") :- fillOp(o, _).
 #else
 cleared(o, "fill-shares-handle") :- fillOp(o, t), !handleCarrying(t).
-#endif
-#ifdef MUTANT_EXTOFF
-cleared(d, "extern-summary-missing") :- externParam(d, _).
-#else
-cleared(d, "extern-summary-missing") :- externParam(d, _), externSummary(d).
 #endif
 #ifdef MUTANT_ADDROFF
 cleared(a, "handler-state-escape") :- stateAddress(a).

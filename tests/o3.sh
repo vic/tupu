@@ -18,7 +18,7 @@ one() { # family [range]: a run that fails or hits the 60 s cap is named, never 
   rc=$?; [ $rc = 0 ] || echo "O3 run.sh $1 ${2:+RANGE=$2 }exit $rc"
 }
 eval "$(sed -n '/^slices() {/,/^}/p' "$D/gate.sh")" # the slice list of gate.sh (S88, S92): the same list as d0
-for fam in bounds memory arith contracts flow capabilities names tests types stack corpus; do
+for fam in bounds memory arith contracts flow capabilities names tests types stack corpus taint; do
   for r in $(slices "$fam"); do ( cd "$D" && one "$fam" "$r" ); done
 done
 grep -v '^#' "$D/expected-exact.txt" > "$W/exact"

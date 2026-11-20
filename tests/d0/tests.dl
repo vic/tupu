@@ -7,6 +7,17 @@
 #define STIGI_TESTS
 #include "schema.dl"
 #include "names.dl"
+#include "flow.dl"   // ruling S73: a match arm also owes `branch-decided`, which the flow family clears
+
+// ruling S73: every arm that handles a typed failure is reached by a Test under a fault-injecting handler
+// (ruling S93: the owes rule already restricts the subject to the failure arms, so the clearing rule has two atoms)
+#ifdef MUTANT_NOREACH
+cleared(o, "failure-path-untested") :- unit(t, "Test"), matchArm(o, _, _).
+#elif defined(MUTANT_ANYUNIT)
+cleared(o, "failure-path-untested") :- faultReach(_, o).
+#else
+cleared(o, "failure-path-untested") :- faultReach(t, o), unit(t, "Test").
+#endif
 
 #ifdef MUTANT_TESTOFF
 cleared(t, "test-failed") :- unit(t, "Test").

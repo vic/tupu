@@ -1,5 +1,7 @@
 #include "engine.h"
 #include "num.h"
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -146,6 +148,10 @@ static Status step_atom(Engine *x, const Plan *p, int k, PlanEnd end) {
   const Table *t = &x->tabs[s->rel];
   uint32_t lo, hi;
   range_of(x, s, &lo, &hi);
+  if (k == x->chunk_step && p == &x->cur->plan) { /* S80: this job covers one chunk of the first atom's range */
+    if (lo < x->chunk_lo) lo = x->chunk_lo;
+    if (hi > x->chunk_hi) hi = x->chunk_hi;
+  }
   if (lo >= hi) return STATUS_OK;
   if (s->idx == NULL) {
     for (uint32_t row = lo; row < hi; row++) {
@@ -302,8 +308,10 @@ void engine_close(Engine *x) {
   memset(x, 0, sizeof *x);
 }
 
-Status engine_open(Engine *x, Program *p, const char *facts_dir, uint64_t budget, bool prov, Err *e) {
+Status engine_open(Engine *x, Program *p, const char *facts_dir, uint64_t budget, bool prov, size_t nthreads, Err *e) {
   memset(x, 0, sizeof *x);
+  x->nthreads = nthreads == 0 ? 1 : nthreads;
+  x->chunk_step = -1;
   x->prog = p;
   x->budget = budget;
   x->prov = prov;
@@ -318,6 +326,7 @@ Status engine_open(Engine *x, Program *p, const char *facts_dir, uint64_t budget
     if ((size_t)p->rels.p[i].ncols > maxcols) maxcols = (size_t)p->rels.p[i].ncols;
     if (table_init(&x->tabs[i], &p->rels.p[i], prov, e) != STATUS_OK) return STATUS_ERR;
   }
+  x->ncols_max = maxcols;
   x->scratch = malloc((maxcols + 1) * sizeof *x->scratch);
   x->hv = malloc((maxcols + 1) * sizeof *x->hv);
   x->cells = malloc((maxcols + 1) * sizeof *x->cells);
@@ -328,6 +337,8 @@ Status engine_open(Engine *x, Program *p, const char *facts_dir, uint64_t budget
     if (p->rules.p[i].nvars > maxvars) maxvars = p->rules.p[i].nvars;
     if (p->rules.p[i].nlits > maxatoms) maxatoms = p->rules.p[i].nlits;
   }
+  x->nvars_max = (size_t)maxvars;
+  x->natoms_max = (size_t)maxatoms;
   x->vars = calloc((size_t)maxvars + 1, sizeof *x->vars);
   x->body = calloc((size_t)maxatoms + 1, sizeof *x->body);
   if (x->vars == NULL || x->body == NULL) return err_oom(e);
@@ -363,34 +374,201 @@ static Status sync_indexes(Engine *x, int comp) {
   return STATUS_OK;
 }
 
-static Status run_variants(Engine *x, const Variants *vs, int comp) {
-  for (size_t i = 0; i < vs->n; i++) {
-    const Variant *v = &vs->p[i];
-    if (v->comp != comp) continue;
-    x->cur = v;
-    if (ex_run(x, &v->plan, 0, END_HEAD) != STATUS_OK) return STATUS_ERR;
+typedef struct JobList JobList;
+static Status merge(Engine *x, JobList *jl, uint32_t round, uint64_t *new_rows);
+/* ---- S80: a round is a list of jobs, one per (rule variant, chunk of 4096 rows of its first atom), in that order ---- */
+#define CHUNK_ROWS 4096u
+
+typedef struct {
+  const Variant *v;
+  int step; /* the first atom step of the plan, or -1 */
+  uint32_t lo, hi;
+  Buf buf;
+  Err err;
+  Status st;
+  size_t seq; /* order of completion, used only by the MERGEORDER mutant */
+} Job;
+
+struct JobList {
+  Job *p;
+  size_t n, cap;
+};
+
+typedef struct {
+  Engine *g;
+  JobList *jobs;
+  atomic_size_t *next;
+  atomic_ullong derivations, rows, probes;
+  atomic_size_t seq;
+} Pool;
+
+static int first_atom_step(const Variant *v) {
+  for (int k = 0; k < v->plan.nsteps; k++)
+    if (v->plan.steps[k].kind == ST_ATOM) return k;
+  return -1;
+}
+
+static void job_free(Job *j) {
+  free(j->buf.e);
+  free(j->buf.vals);
+  free(j->buf.bodies);
+}
+
+static Status jobs_push(JobList *l, const Variant *v, int step, uint32_t lo, uint32_t hi, Err *e) {
+  if (l->n == l->cap) {
+    size_t nc = l->cap == 0 ? 64 : l->cap * 2;
+    Job *np = realloc(l->p, nc * sizeof *np);
+    if (np == NULL) return err_oom(e);
+    l->p = np;
+    l->cap = nc;
   }
+  Job *j = &l->p[l->n++];
+  memset(j, 0, sizeof *j);
+  j->v = v;
+  j->step = step;
+  j->lo = lo;
+  j->hi = hi;
   return STATUS_OK;
 }
 
-static Status merge(Engine *x, uint32_t round, uint64_t *new_rows) {
-  Buf *b = &x->buf;
-  *new_rows = 0;
-  for (size_t i = 0; i < b->n; i++) {
-    const Entry *en = &b->e[i];
-    int nb = 0;
-    if (x->prov) {
-      const Rule *rule = &x->prog->rules.p[en->rule];
-      for (int k = 0; k < rule->nlits; k++)
-        if (rule->lits[k]->kind == LIT_POS) nb++;
-    }
-    bool added;
-    if (table_add(&x->tabs[en->rel], b->vals + en->voff, ORG_RULE, en->rule, round, b->bodies + en->boff, nb, &added, x->err) !=
-        STATUS_OK)
-      return STATUS_ERR;
-    if (added) (*new_rows)++;
+/* one worker: a private copy of the execution state; tables, indexes and ranges are shared and read-only in a round */
+typedef struct {
+  Engine w;
+  bool ok;
+} Worker;
+
+static Status worker_init(Worker *wk, const Engine *g) {
+  wk->w = *g;
+  memset(&wk->w.buf, 0, sizeof wk->w.buf);
+  size_t nv = g->nvars_max + 1, nc = g->ncols_max + 1;
+  wk->w.vars = calloc(nv, sizeof *wk->w.vars);
+  wk->w.body = calloc(g->natoms_max + 1, sizeof *wk->w.body);
+  wk->w.scratch = malloc(nc * sizeof *wk->w.scratch);
+  wk->w.hv = malloc(nc * sizeof *wk->w.hv);
+  wk->w.cells = NULL;
+  wk->w.derivations = wk->w.rows_derived = wk->w.probes = 0;
+  wk->ok = wk->w.vars && wk->w.body && wk->w.scratch && wk->w.hv;
+  return wk->ok ? STATUS_OK : STATUS_ERR;
+}
+
+static void worker_free(Worker *wk) {
+  free(wk->w.vars);
+  free(wk->w.body);
+  free(wk->w.scratch);
+  free(wk->w.hv);
+}
+
+static void run_job(Engine *w, Job *j) {
+  w->cur = j->v;
+  w->chunk_step = j->step;
+  w->chunk_lo = j->lo;
+  w->chunk_hi = j->hi;
+  w->err = &j->err;
+  w->buf = j->buf;
+  j->st = ex_run(w, &j->v->plan, 0, END_HEAD);
+  j->buf = w->buf;
+}
+
+static void *pool_main(void *arg) {
+  Pool *pl = arg;
+  Worker wk;
+  if (worker_init(&wk, pl->g) != STATUS_OK) {
+    worker_free(&wk);
+    /* an allocation failure of a worker: every job it would take is taken by the others; if none runs, the caller sees it */
+    return NULL;
   }
-  b->n = b->nvals = b->nbodies = 0;
+  for (;;) {
+    size_t i = atomic_fetch_add(pl->next, 1);
+    if (i >= pl->jobs->n) break;
+    run_job(&wk.w, &pl->jobs->p[i]);
+    pl->jobs->p[i].seq = atomic_fetch_add(&pl->seq, 1);
+  }
+  atomic_fetch_add(&pl->derivations, wk.w.derivations);
+  atomic_fetch_add(&pl->rows, wk.w.rows_derived);
+  atomic_fetch_add(&pl->probes, wk.w.probes);
+  worker_free(&wk);
+  return NULL;
+}
+
+/* build the jobs of this round, run them on up to x->nthreads threads, then merge the buffers in job order */
+static Status run_round(Engine *x, const Variants *vs, int comp, uint32_t round, uint64_t *new_rows) {
+  JobList jl = { NULL, 0, 0 };
+  Status st = STATUS_OK;
+  for (size_t i = 0; i < vs->n && st == STATUS_OK; i++) {
+    const Variant *v = &vs->p[i];
+    if (v->comp != comp) continue;
+    int fa = first_atom_step(v);
+    if (fa < 0) {
+      st = jobs_push(&jl, v, -1, 0, 0, x->err);
+      continue;
+    }
+    uint32_t lo, hi;
+    range_of(x, &v->plan.steps[fa], &lo, &hi);
+    for (uint32_t c = lo; c < hi && st == STATUS_OK; c += CHUNK_ROWS) {
+      uint32_t ch = hi - c > CHUNK_ROWS ? c + CHUNK_ROWS : hi;
+      st = jobs_push(&jl, v, fa, c, ch, x->err);
+    }
+  }
+  if (st != STATUS_OK) {
+    free(jl.p);
+    return st;
+  }
+  atomic_size_t next = 0;
+  Pool pl = { x, &jl, &next, 0, 0, 0, 0 };
+  size_t nt = x->nthreads < jl.n ? x->nthreads : jl.n;
+  pthread_t th[64];
+  size_t started = 0;
+  if (nt > 64) nt = 64;
+  for (size_t t = 1; t < nt; t++)
+    if (pthread_create(&th[started], NULL, pool_main, &pl) == 0) started++;
+  pool_main(&pl); /* the calling thread works too; with no thread started it runs every job */
+  for (size_t t = 0; t < started; t++) (void)pthread_join(th[t], NULL);
+  x->derivations += atomic_load(&pl.derivations);
+  x->rows_derived += atomic_load(&pl.rows);
+  x->probes += atomic_load(&pl.probes);
+  /* the first failed job in job order decides the refusal: the same for every thread count */
+  for (size_t i = 0; i < jl.n && st == STATUS_OK; i++)
+    if (jl.p[i].st != STATUS_OK) {
+      *x->err = jl.p[i].err;
+      st = STATUS_ERR;
+    }
+  /* a job nobody ran (every worker failed to allocate) leaves st unset: its status is STATUS_OK with an empty buffer, so
+     check that every job was taken */
+  if (st == STATUS_OK && atomic_load(&next) < jl.n) st = err_oom(x->err);
+  if (st == STATUS_OK) st = merge(x, &jl, round, new_rows);
+  for (size_t i = 0; i < jl.n; i++) job_free(&jl.p[i]);
+  free(jl.p);
+  return st;
+}
+
+#ifdef MUTANT_MERGEORDER
+static int by_seq(const void *a, const void *b) {
+  const Job *x = a, *y = b;
+  return (x->seq > y->seq) - (x->seq < y->seq);
+}
+#endif
+static Status merge(Engine *x, JobList *jl, uint32_t round, uint64_t *new_rows) {
+  *new_rows = 0;
+#ifdef MUTANT_MERGEORDER
+  qsort(jl->p, jl->n, sizeof *jl->p, by_seq);
+#endif
+  for (size_t j = 0; j < jl->n; j++) {
+    Buf *b = &jl->p[j].buf;
+    for (size_t i = 0; i < b->n; i++) {
+      const Entry *en = &b->e[i];
+      int nb = 0;
+      if (x->prov) {
+        const Rule *rule = &x->prog->rules.p[en->rule];
+        for (int k = 0; k < rule->nlits; k++)
+          if (rule->lits[k]->kind == LIT_POS) nb++;
+      }
+      bool added;
+      if (table_add(&x->tabs[en->rel], b->vals + en->voff, ORG_RULE, en->rule, round, b->bodies + en->boff, nb, &added, x->err) !=
+          STATUS_OK)
+        return STATUS_ERR;
+      if (added) (*new_rows)++;
+    }
+  }
   x->added += *new_rows;
 #ifndef MUTANT_NOBUDGET
   if (x->added > x->budget) return err_set(x->err, CODE_DATALOG_BUDGET, NULL, 0, "the row budget of %llu rows is exceeded", (unsigned long long)x->budget);
@@ -421,9 +599,8 @@ Status engine_eval(Engine *x, Err *e) {
       uint32_t *before = malloc((n + 1) * sizeof *before);
       if (before == NULL) return err_oom(e);
       for (size_t r = 0; r < n; r++) before[r] = x->tabs[r].count;
-      Status st = run_variants(x, round == 1 ? &x->naive : &x->delta, comp);
       uint64_t added = 0;
-      if (st == STATUS_OK) st = merge(x, round, &added);
+      Status st = run_round(x, round == 1 ? &x->naive : &x->delta, comp, round, &added);
       if (st != STATUS_OK) {
         free(before);
         return STATUS_ERR;

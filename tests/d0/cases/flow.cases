@@ -56,13 +56,18 @@ rw rowsWriteIndexMissing; f operation 'w1 ElementWrite p1 R'; f requiresRow 'Ele
 rw rowsWriteViaMissing; f operation 'w1 ElementWrite p1 R'; f requiresRow 'ElementWrite Overwrite' 'ElementWrite IndexWrite' 'ElementWrite WriteVia' 'ElementWrite OperationRow'; f emitted 'w1 Overwrite' 'w1 IndexWrite' 'w1 OperationRow'
 rw rowsCallArgOk; f operation 'c1 Call p1 R'; f requiresRow 'Call ArgVia' 'Call OperationRow'; f emitted 'c1 ArgVia' 'c1 OperationRow'
 rw rowsCallArgMissing; f operation 'c1 Call p1 R'; f requiresRow 'Call ArgVia' 'Call OperationRow'; f emitted 'c1 OperationRow'
+rw rowsCallValueOk; f operation 'c1 Call p1 R'; f requiresRow 'Call Operand' 'Call Result' 'Call OperationRow'; f emitted 'c1 Operand' 'c1 Result' 'c1 OperationRow'
+rw rowsCallOperandMissing; f operation 'c1 Call p1 R'; f requiresRow 'Call Operand' 'Call Result' 'Call OperationRow'; f emitted 'c1 Result' 'c1 OperationRow'
+rw rowsCallResultMissing; f operation 'c1 Call p1 R'; f requiresRow 'Call Operand' 'Call Result' 'Call OperationRow'; f emitted 'c1 Operand' 'c1 OperationRow'
 rw rowsAliasOk; f operation 'b1 PatternBind p1 R'; f requiresRow 'PatternBind Alias' 'PatternBind OperationRow'; f emitted 'b1 Alias' 'b1 OperationRow'
 rw rowsAliasMissing; f operation 'b1 PatternBind p1 R'; f requiresRow 'PatternBind Alias' 'PatternBind OperationRow'; f emitted 'b1 OperationRow'
 rw rowsUnknownKind; f next 'p1 p2'; f operation 'w1 Strange p1 R' 'w2 ElementWrite p2 R'; f requiresRow 'ElementWrite OperationRow'; f emitted 'w1 OperationRow' 'w2 OperationRow'
-for x in rowsWriteOk rowsWriteMissing rowsAliasOk rowsAliasMissing rowsUnknownKind rowsWriteIndexMissing rowsWriteViaMissing rowsCallArgOk rowsCallArgMissing; do fx $x; done
+for x in rowsWriteOk rowsWriteMissing rowsAliasOk rowsAliasMissing rowsUnknownKind rowsWriteIndexMissing rowsWriteViaMissing rowsCallArgOk rowsCallArgMissing rowsCallValueOk rowsCallOperandMissing rowsCallResultMissing; do fx $x; done
 fx rowsWriteMissing -MMUTANT_ANYROW
 fx rowsAliasMissing -MMUTANT_ANYROW
 fx rowsUnknownKind -MMUTANT_ROWSOFF
 fx rowsWriteIndexMissing -MMUTANT_ANYROW
 fx rowsWriteViaMissing -MMUTANT_ANYROW
 fx rowsCallArgMissing -MMUTANT_ANYROW
+fx rowsCallOperandMissing -MMUTANT_ANYROW
+fx rowsCallResultMissing -MMUTANT_ANYROW

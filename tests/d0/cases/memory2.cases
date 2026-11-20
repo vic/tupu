@@ -26,8 +26,8 @@ m5 capUnused; f typeRange 'T4 0 4'; f value i; f valueType 'i T4'; f arrayLen 'a
 m5 capOk; f typeRange 'T4 0 4'; f value i; f valueType 'i T4'; f arrayLen 'arr 4'; f access 'arr i R'
 m5 fillBad; f fillOp 'o1 Arr'; f handleCarrying Arr
 m5 fillOk; f fillOp 'o1 U8'; f handleCarrying Arr
-m5 externBad; f externParam 'e1 0'
-m5 externOk; f externParam 'e1 0'; f externSummary e1
+m5 externBad; f externParam 'e1 0'; f bodylessExtern e1; f externStack 'e1 8'
+m5 externOk; f externParam 'e1 0'; f externSummary e1; f bodylessExtern e1; f externStack 'e1 8'
 m5 handlerState; f stateAddress a1 a2 a3; f addressUse 'a1 Call' 'a2 Store' 'a3 Return'
 # ---- summaries across calls ----
 m5 sumTwice q0; f heap r; f alloc 'd r q0' 'v r q1'; f next 'q0 q1' 'q1 q2' 'q2 q3' 'q3 q4'

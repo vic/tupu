@@ -1,0 +1,24 @@
+// Body-less externs (ruling S72, memory.md 6 and 7, runtime.md 2): a body-less extern states its worst-case stack bytes
+// (`externStack`) and, when it has a handle-carrying parameter, its summary (`externSummary`). The one clearing rule of
+// `extern-summary-missing`, shared by the memory family (summaries) and the stack family (the cost of the extern).
+// Theory: none (direct joins of the extern table, T9).
+// Mutants (cases/memory2.cases, cases/stack.cases): MUTANT_EXTOFF, MUTANT_COSTOPTIONAL, MUTANT_COSTOPTSUM.
+#ifndef STIGI_EXTERNS
+#define STIGI_EXTERNS
+#include "schema.dl"
+
+#ifdef MUTANT_EXTOFF
+cleared(d, "extern-summary-missing") :- bodylessExtern(d).
+#else
+#ifdef MUTANT_COSTOPTIONAL
+cleared(d, "extern-summary-missing") :- bodylessExtern(d), !externParam(d, _).
+#else
+cleared(d, "extern-summary-missing") :- bodylessExtern(d), externStack(d, _), !externParam(d, _).
+#endif
+#ifdef MUTANT_COSTOPTSUM
+cleared(d, "extern-summary-missing") :- bodylessExtern(d), externSummary(d).
+#else
+cleared(d, "extern-summary-missing") :- bodylessExtern(d), externStack(d, _), externSummary(d).
+#endif
+#endif
+#endif

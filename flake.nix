@@ -39,7 +39,7 @@
 
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
-          packages = with pkgs; [ gcc clang just mcpp hyperfine perf valgrind ];
+          packages = with pkgs; [ gcc clang just mcpp hyperfine perf valgrind cargo rustc ];
         };
       });
 
