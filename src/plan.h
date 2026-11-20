@@ -21,7 +21,8 @@ typedef struct {
   int nargs;
   ArgSlot *args;
   Index *idx;    /* NULL: scan, or a membership test for a negated atom with every column bound */
-  uint32_t mask; /* bound columns of an atom; for a negated atom the columns that are not _ */
+  uint32_t *cols;  /* bound columns, ascending: for a negated atom the columns that are not _ */
+  uint32_t nbound;
   bool exact;    /* ST_NEG: no wildcard, so a set membership test decides */
   int atom_pos;  /* ST_ATOM at the top level: index among the positive atoms in text order, else -1 */
   RangeKind range;

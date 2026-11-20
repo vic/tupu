@@ -1,0 +1,4 @@
+.type S <: symbol
+.type N <: number
+.type U = S | N
+.decl a(x: U)

@@ -334,7 +334,6 @@ static Status parse_primary_body(Parser *x, Dnf *d) {
   if (cur(x)->kind == T_LPAREN) {
     /* try a parenthesised group of literals; if that does not read, the ( starts an expression of a comparison */
     size_t save = x->pos;
-    Err keep = *x->e;
     next(x);
     Dnf inner = { NULL, 0, 0 };
     if (parse_body(x, &inner, false) == STATUS_OK && cur(x)->kind == T_RPAREN) {
@@ -342,7 +341,6 @@ static Status parse_primary_body(Parser *x, Dnf *d) {
       *d = inner;
       return STATUS_OK;
     }
-    *x->e = keep;
     x->pos = save;
   }
   Lit *lit = NULL;
@@ -454,6 +452,7 @@ static Status parse_decl(Parser *x) {
   r->line = d->line;
   next(x);
   if (expect(x, T_LPAREN, "expected (") != STATUS_OK) return STATUS_ERR;
+  struct { Name *p; size_t n, cap; } cols = { NULL, 0, 0 };
   if (cur(x)->kind != T_RPAREN) {
     for (;;) {
       if (cur(x)->kind != T_IDENT) return perr(x, "expected a column name");
@@ -461,10 +460,11 @@ static Status parse_decl(Parser *x) {
       if (expect(x, T_COLON, "expected : after the column name") != STATUS_OK) return STATUS_ERR;
       Token *ty = cur(x);
       if (ty->kind != T_IDENT) return perr(x, "expected a type name");
-      if (r->ncols >= MAXCOLS) return perr(x, "too many columns");
-      r->coltype[r->ncols].s = ty->s;
-      r->coltype[r->ncols].n = ty->n;
-      r->ncols++;
+      if (cols.n >= INT32_MAX) return perr(x, "too many columns");
+      Name *s = ARR_SLOT(x->a, cols, x->e);
+      if (s == NULL) return STATUS_ERR;
+      s->s = ty->s;
+      s->n = ty->n;
       next(x);
       if (cur(x)->kind == T_COMMA) {
         next(x);
@@ -473,6 +473,8 @@ static Status parse_decl(Parser *x) {
       break;
     }
   }
+  r->coltype = cols.p;
+  r->ncols = (int)cols.n;
   if (expect(x, T_RPAREN, "expected )") != STATUS_OK) return STATUS_ERR;
   if (cur(x)->kind == T_IDENT && peek(x, 1)->kind != T_LPAREN) return perr(x, "a relation qualifier is not supported");
   return STATUS_OK;

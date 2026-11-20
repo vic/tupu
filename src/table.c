@@ -4,15 +4,21 @@
 #include <stdlib.h>
 #include <string.h>
 
-void table_init(Table *t, const Relation *r, bool want_prov) {
+Status table_init(Table *t, const Relation *r, bool want_prov, Err *e) {
   memset(t, 0, sizeof *t);
   t->ncols = r->ncols;
+  t->kind = malloc(((size_t)r->ncols + 1) * sizeof *t->kind);
+  t->col = calloc((size_t)r->ncols + 1, sizeof *t->col);
+  if (t->kind == NULL || t->col == NULL) return err_oom(e);
   for (int c = 0; c < r->ncols; c++) t->kind[c] = r->colkind[c];
   t->want_prov = want_prov;
+  return STATUS_OK;
 }
 
 void table_free(Table *t) {
-  for (int c = 0; c < t->ncols; c++) free(t->col[c]);
+  for (int c = 0; c < t->ncols && t->col != NULL; c++) free(t->col[c]);
+  free(t->col);
+  free(t->kind);
   free(t->org_kind);
   free(t->org_ref);
   free(t->round);
@@ -20,6 +26,7 @@ void table_free(Table *t) {
   free(t->dused);
   for (int i = 0; i < t->nidx; i++) {
     Index *ix = t->idx[i];
+    free(ix->cols);
     free(ix->hash);
     free(ix->first);
     free(ix->used);
@@ -32,37 +39,34 @@ void table_free(Table *t) {
   memset(t, 0, sizeof *t);
 }
 
-static uint64_t hash_words(const Table *t, uint32_t mask, const I128 *vals) {
+static uint64_t fold_cell(uint64_t acc, Base k, I128 v) {
+  if (k == BASE_SYMBOL) return mix64(acc ^ (uint64_t)v);
+  U128 u = (U128)v;
+  acc = mix64(acc ^ (uint64_t)u);
+  return mix64(acc ^ (uint64_t)(u >> 64));
+}
+
+uint64_t hash_cells(const Table *t, const uint32_t *cols, uint32_t nb, const I128 *vals_by_col) {
   uint64_t acc = 0;
-  for (int c = 0; c < t->ncols; c++) {
-    if (!(mask & ((uint32_t)1 << c))) continue;
-    if (t->kind[c] == BASE_SYMBOL) {
-      acc = mix64(acc ^ (uint64_t)vals[c]);
-    } else {
-      U128 u = (U128)vals[c];
-      acc = mix64(acc ^ (uint64_t)u);
-      acc = mix64(acc ^ (uint64_t)(u >> 64));
-    }
-  }
+  for (uint32_t i = 0; i < nb; i++) acc = fold_cell(acc, t->kind[cols[i]], vals_by_col[cols[i]]);
   return acc;
 }
 
-uint64_t hash_cells(const Table *t, uint32_t mask, const I128 *vals_by_col) { return hash_words(t, mask, vals_by_col); }
-
-static uint32_t full_mask(const Table *t) { return t->ncols >= 32 ? 0xffffffffu : (((uint32_t)1 << t->ncols) - 1); }
-
-static uint64_t hash_row_cells(const Table *t, uint32_t mask, uint32_t row) {
+static uint64_t hash_vals_all(const Table *t, const I128 *vals) {
   uint64_t acc = 0;
-  for (int c = 0; c < t->ncols; c++) {
-    if (!(mask & ((uint32_t)1 << c))) continue;
-    if (t->kind[c] == BASE_SYMBOL) {
-      acc = mix64(acc ^ (uint64_t)((const uint32_t *)t->col[c])[row]);
-    } else {
-      U128 u = (U128)((const I128 *)t->col[c])[row];
-      acc = mix64(acc ^ (uint64_t)u);
-      acc = mix64(acc ^ (uint64_t)(u >> 64));
-    }
-  }
+  for (int c = 0; c < t->ncols; c++) acc = fold_cell(acc, t->kind[c], vals[c]);
+  return acc;
+}
+
+static uint64_t hash_row(const Table *t, const uint32_t *cols, uint32_t nb, uint32_t row) {
+  uint64_t acc = 0;
+  for (uint32_t i = 0; i < nb; i++) acc = fold_cell(acc, t->kind[cols[i]], tcell(t, (int)cols[i], row));
+  return acc;
+}
+
+static uint64_t hash_row_all(const Table *t, uint32_t row) {
+  uint64_t acc = 0;
+  for (int c = 0; c < t->ncols; c++) acc = fold_cell(acc, t->kind[c], tcell(t, c, row));
   return acc;
 }
 
@@ -81,9 +85,8 @@ static Status dedup_grow(Table *t, Err *e) {
     free(nu);
     return err_oom(e);
   }
-  uint32_t fm = full_mask(t);
   for (uint32_t r = 0; r < t->count; r++) {
-    size_t i = hash_row_cells(t, fm, r) & (ncap - 1);
+    size_t i = hash_row_all(t, r) & (ncap - 1);
     while (nu[i]) i = (i + 1) & (ncap - 1);
     nu[i] = 1;
     ns[i] = r;
@@ -98,8 +101,8 @@ static Status dedup_grow(Table *t, Err *e) {
 
 static Status table_grow(Table *t, Err *e) {
   uint32_t ncap = t->cap == 0 ? 1024 : (t->cap > UINT32_MAX / 2 ? UINT32_MAX : t->cap * 2);
-  void *ncol[MAXCOLS];
-  memset(ncol, 0, sizeof ncol);
+  void **ncol = calloc((size_t)t->ncols + 1, sizeof *ncol);
+  if (ncol == NULL) return err_oom(e);
   bool fail = false;
   for (int c = 0; c < t->ncols; c++) {
     size_t w = t->kind[c] == BASE_SYMBOL ? sizeof(uint32_t) : sizeof(I128);
@@ -112,6 +115,7 @@ static Status table_grow(Table *t, Err *e) {
   if (ok == NULL || or2 == NULL || rd == NULL || (t->want_prov && po == NULL)) fail = true;
   if (fail) {
     for (int c = 0; c < t->ncols; c++) free(ncol[c]);
+    free(ncol);
     free(ok); free(or2); free(rd); free(po);
     return err_oom(e);
   }
@@ -130,12 +134,13 @@ static Status table_grow(Table *t, Err *e) {
   free(t->org_kind); free(t->org_ref); free(t->round); free(t->poff);
   t->org_kind = ok; t->org_ref = or2; t->round = rd; t->poff = po;
   t->cap = ncap;
+  free(ncol);
   return STATUS_OK;
 }
 
 bool table_contains(const Table *t, const I128 *vals) {
   if (t->dcap == 0) return false;
-  size_t i = hash_words(t, full_mask(t), vals) & (t->dcap - 1);
+  size_t i = hash_vals_all(t, vals) & (t->dcap - 1);
   while (t->dused[i]) {
     if (row_equals(t, t->dslot[i], vals)) return true;
     i = (i + 1) & (t->dcap - 1);
@@ -149,11 +154,14 @@ Status table_add(Table *t, const I128 *vals, Origin org, uint32_t ref, uint32_t 
   if (t->dcap == 0 || (size_t)(t->count + 1) * 2 > t->dcap) {
     if (dedup_grow(t, e) != STATUS_OK) return STATUS_ERR;
   }
-  size_t i = hash_words(t, full_mask(t), vals) & (t->dcap - 1);
+  size_t i = hash_vals_all(t, vals) & (t->dcap - 1);
   while (t->dused[i]) {
     if (row_equals(t, t->dslot[i], vals)) return STATUS_OK;
     i = (i + 1) & (t->dcap - 1);
   }
+#ifdef MUTANT_DEDUPREL
+  if (t->count > 0) return STATUS_OK;
+#endif
   if (t->count == UINT32_MAX - 1) return err_set(e, CODE_DATALOG_BUDGET, NULL, 0, "a table reached 2^32-2 rows");
   if (t->count == t->cap && table_grow(t, e) != STATUS_OK) return STATUS_ERR;
   if (t->want_prov) {
@@ -184,9 +192,9 @@ Status table_add(Table *t, const I128 *vals, Origin org, uint32_t ref, uint32_t 
 }
 
 /* ---- indexes ---- */
-Status table_index(Table *t, uint32_t mask, Index **out, Err *e) {
+Status table_index(Table *t, const uint32_t *cols, uint32_t nb, Index **out, Err *e) {
   for (int i = 0; i < t->nidx; i++)
-    if (t->idx[i]->mask == mask) {
+    if (t->idx[i]->nb == nb && memcmp(t->idx[i]->cols, cols, (size_t)nb * sizeof *cols) == 0) {
       *out = t->idx[i];
       return STATUS_OK;
     }
@@ -199,7 +207,13 @@ Status table_index(Table *t, uint32_t mask, Index **out, Err *e) {
   }
   Index *ix = calloc(1, sizeof *ix);
   if (ix == NULL) return err_oom(e);
-  ix->mask = mask;
+  ix->cols = malloc(((size_t)nb + 1) * sizeof *cols);
+  if (ix->cols == NULL) {
+    free(ix);
+    return err_oom(e);
+  }
+  memcpy(ix->cols, cols, (size_t)nb * sizeof *cols);
+  ix->nb = nb;
   t->idx[t->nidx++] = ix;
   *out = ix;
   return STATUS_OK;
@@ -242,7 +256,7 @@ Status index_sync(Index *ix, const Table *t, Err *e) {
     if (ix->scap == 0 || (ix->nslots + 1) * 2 > ix->scap) {
       if (slots_grow(ix, t, e) != STATUS_OK) return STATUS_ERR;
     }
-    uint64_t h = hash_row_cells(t, ix->mask, r);
+    uint64_t h = hash_row(t, ix->cols, ix->nb, r);
     size_t i = h & (ix->scap - 1);
     while (ix->used[i] && ix->hash[i] != h) i = (i + 1) & (ix->scap - 1);
     if (ix->used[i]) {
@@ -304,7 +318,11 @@ Status facts_load(Table *t, const Relation *r, SymTab *syms, const char *path, E
     free(buf);
     return err_set(e, CODE_IO_FAILED, path, 0, "read failed");
   }
-  I128 vals[MAXCOLS];
+  I128 *vals = malloc(((size_t)t->ncols + 1) * sizeof *vals);
+  if (vals == NULL) {
+    free(buf);
+    return err_oom(e);
+  }
   long line = 0;
   size_t p = 0;
   Status st = STATUS_OK;
@@ -350,5 +368,6 @@ Status facts_load(Table *t, const Relation *r, SymTab *syms, const char *path, E
     p = eol + 1;
   }
   free(buf);
+  free(vals);
   return st;
 }

@@ -5,17 +5,17 @@
 set -u
 BIN=${BIN:?BIN is not set}
 ROOT=$(pwd)
+W=$(mktemp -d "${TMPDIR:-/tmp}/o3.XXXXXX"); trap 'rm -rf "$W"' EXIT
 export TUPU=$ROOT/$BIN SOUFFLE=$ROOT/tests/souffle-shim.sh
 fams=${*:-bounds memory arith contracts flow capabilities names tests types stack corpus}
 rc=0
 cd tests/d0/cases || exit 2
 for f in $fams; do
-  timeout 280 sh run.sh "$f" 2> /tmp/claude-1000/o3.err.$$ | cut -c1-230 > /tmp/claude-1000/o3.out.$$
-  labels=$(awk '{print $1}' /tmp/claude-1000/o3.out.$$ | sort -u | paste -sd'|')
-  grep -E "^($labels) " expected.txt > /tmp/claude-1000/o3.exp.$$
-  nout=$(wc -l < /tmp/claude-1000/o3.out.$$); nexp=$(wc -l < /tmp/claude-1000/o3.exp.$$)
-  if diff /tmp/claude-1000/o3.out.$$ /tmp/claude-1000/o3.exp.$$ > /tmp/claude-1000/o3.diff.$$; then echo "O3 $f lines=$nout expected=$nexp diff=empty";
-  else echo "O3 $f lines=$nout expected=$nexp diff=$(grep -c '^<' /tmp/claude-1000/o3.diff.$$) lines differ"; rc=1; head -${DIFFLINES:-6} /tmp/claude-1000/o3.diff.$$ | cut -c1-260; fi
+  timeout 280 sh run.sh "$f" 2> "$W"/err | cut -c1-230 > "$W"/out
+  labels=$(awk '{print $1}' "$W"/out | sort -u | paste -sd'|')
+  grep -E "^($labels) " expected.txt > "$W"/exp
+  nout=$(wc -l < "$W"/out); nexp=$(wc -l < "$W"/exp)
+  if diff "$W"/out "$W"/exp > "$W"/diff; then echo "O3 $f lines=$nout expected=$nexp diff=empty";
+  else echo "O3 $f lines=$nout expected=$nexp diff=$(grep -c '^<' "$W"/diff) lines differ"; rc=1; head -${DIFFLINES:-6} "$W"/diff | cut -c1-260; fi
 done
-rm -f /tmp/claude-1000/o3.*.$$
 exit $rc

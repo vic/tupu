@@ -27,7 +27,11 @@ const char *code_name(Code c) {
 Status err_set(Err *e, Code c, const char *file, long line, const char *fmt, ...) {
   va_list ap;
   e->code = c;
-  e->file = file;
+  e->file = NULL;
+  if (file != NULL) {
+    (void)snprintf(e->filebuf, sizeof e->filebuf, "%s", file);
+    e->file = e->filebuf;
+  }
   e->line = line;
   va_start(ap, fmt);
   (void)vsnprintf(e->text, sizeof e->text, fmt, ap);

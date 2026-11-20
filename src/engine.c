@@ -35,7 +35,11 @@ static Status ex_eval(Engine *x, const Expr *e, I128 *out) {
     if (ex_eval(x, e->a, &a) != STATUS_OK || ex_eval(x, e->b, &b) != STATUS_OK) return STATUS_ERR;
     bool ok;
     switch (e->op) {
+#ifdef MUTANT_WRAPADD
+    case OP_ADD: *out = (I128)((U128)a + (U128)b); ok = true; break;
+#else
     case OP_ADD: ok = num_add(a, b, out); break;
+#endif
     case OP_SUB: ok = num_sub(a, b, out); break;
     case OP_MUL: ok = num_mul(a, b, out); break;
     case OP_DIV: ok = num_div(a, b, out); break;
@@ -80,13 +84,16 @@ static Status buf_push(Engine *x, uint32_t rel, uint32_t rule, const I128 *vals,
   memcpy(b->vals + b->nvals, vals, (size_t)nv * sizeof *vals);
   b->nvals += (size_t)nv;
   if (nb > 0) memcpy(b->bodies + b->nbodies, body, (size_t)nb * sizeof *body);
+#ifdef MUTANT_PROVBODY
+  if (nb > 0) b->bodies[b->nbodies] += 1;
+#endif
   b->nbodies += (size_t)nb;
   return STATUS_OK;
 }
 
 static Status emit_head(Engine *x) {
   const Rule *r = x->cur->rule;
-  I128 hv[MAXCOLS];
+  I128 *hv = x->hv;
   for (int i = 0; i < r->head.nargs; i++)
     if (ex_eval(x, r->head.args[i], &hv[i]) != STATUS_OK) return STATUS_ERR;
   if (x->mode == MODE_REPLAY) {
@@ -98,6 +105,7 @@ static Status emit_head(Engine *x) {
     x->found = true;
     return STATUS_OK;
   }
+  x->derivations++;
   const Table *ht = &x->tabs[r->head.rel];
   if (table_contains(ht, hv)) return STATUS_OK;
   x->rows_derived++;
@@ -148,7 +156,7 @@ static Status step_atom(Engine *x, const Plan *p, int k, PlanEnd end) {
     }
     return STATUS_OK;
   }
-  I128 key[MAXCOLS];
+  I128 *key = x->scratch;
   for (int i = 0; i < s->nargs; i++) {
     const ArgSlot *a = &s->args[i];
     if (a->k == AS_CONST) key[i] = a->val;
@@ -156,7 +164,7 @@ static Status step_atom(Engine *x, const Plan *p, int k, PlanEnd end) {
   }
   uint32_t row;
   x->probes++;
-  if (!index_find(s->idx, hash_cells(t, s->mask, key), &row)) return STATUS_OK;
+  if (!index_find(s->idx, hash_cells(t, s->cols, s->nbound, key), &row)) return STATUS_OK;
   for (;;) {
     if (row < hi && row >= lo && match_row(x, s, t, row)) {
       if (s->atom_pos >= 0) x->body[s->atom_pos] = row;
@@ -173,12 +181,12 @@ static Status step_atom(Engine *x, const Plan *p, int k, PlanEnd end) {
 static bool neg_exists(Engine *x, const Step *s) {
   const Table *t = &x->tabs[s->rel];
   if (s->exact) {
-    I128 vals[MAXCOLS];
+    I128 *vals = x->scratch;
     for (int i = 0; i < s->nargs; i++) vals[i] = s->args[i].k == AS_CONST ? s->args[i].val : x->vars[s->args[i].var];
     return table_contains(t, vals);
   }
   if (s->idx == NULL) return t->count > 0; /* only wildcards */
-  I128 key[MAXCOLS];
+  I128 *key = x->scratch;
   for (int i = 0; i < s->nargs; i++) {
     const ArgSlot *a = &s->args[i];
     if (a->k == AS_CONST) key[i] = a->val;
@@ -186,7 +194,7 @@ static bool neg_exists(Engine *x, const Step *s) {
   }
   uint32_t row;
   x->probes++;
-  if (!index_find(s->idx, hash_cells(t, s->mask, key), &row)) return false;
+  if (!index_find(s->idx, hash_cells(t, s->cols, s->nbound, key), &row)) return false;
   for (;;) {
     bool ok = true;
     for (int i = 0; i < s->nargs && ok; i++) {
@@ -282,6 +290,9 @@ void engine_close(Engine *x) {
     for (size_t i = 0; i < x->prog->rels.n; i++) table_free(&x->tabs[i]);
   free(x->tabs);
   free(x->vars);
+  free(x->scratch);
+  free(x->hv);
+  free(x->cells);
   free(x->body);
   free(x->rr);
   free(x->buf.e);
@@ -302,7 +313,15 @@ Status engine_open(Engine *x, Program *p, const char *facts_dir, uint64_t budget
   x->tabs = calloc(n + 1, sizeof *x->tabs);
   x->rr = calloc(n + 1, sizeof *x->rr);
   if (x->tabs == NULL || x->rr == NULL) return err_oom(e);
-  for (size_t i = 0; i < n; i++) table_init(&x->tabs[i], &p->rels.p[i], prov);
+  size_t maxcols = 1;
+  for (size_t i = 0; i < n; i++) {
+    if ((size_t)p->rels.p[i].ncols > maxcols) maxcols = (size_t)p->rels.p[i].ncols;
+    if (table_init(&x->tabs[i], &p->rels.p[i], prov, e) != STATUS_OK) return STATUS_ERR;
+  }
+  x->scratch = malloc((maxcols + 1) * sizeof *x->scratch);
+  x->hv = malloc((maxcols + 1) * sizeof *x->hv);
+  x->cells = malloc((maxcols + 1) * sizeof *x->cells);
+  if (x->scratch == NULL || x->hv == NULL || x->cells == NULL) return err_oom(e);
   if (plan_program(p, &x->strata, x->tabs, &x->naive, &x->delta, e) != STATUS_OK) return STATUS_ERR;
   int maxvars = 1, maxatoms = 1;
   for (size_t i = 0; i < p->rules.n; i++) {
@@ -324,7 +343,7 @@ Status engine_open(Engine *x, Program *p, const char *facts_dir, uint64_t budget
   }
   for (size_t i = 0; i < p->facts.n; i++) {
     const Fact *f = &p->facts.p[i];
-    I128 vals[MAXCOLS];
+    I128 *vals = x->cells;
     for (int c = 0; c < f->atom.nargs; c++) vals[c] = f->atom.args[c]->kind == EX_SYM ? (I128)f->atom.args[c]->sym : f->atom.args[c]->num;
     bool added;
     if (table_add(&x->tabs[f->atom.rel], vals, ORG_FACT, (uint32_t)i, 0, NULL, 0, &added, e) != STATUS_OK) return STATUS_ERR;
@@ -373,7 +392,9 @@ static Status merge(Engine *x, uint32_t round, uint64_t *new_rows) {
   }
   b->n = b->nvals = b->nbodies = 0;
   x->added += *new_rows;
+#ifndef MUTANT_NOBUDGET
   if (x->added > x->budget) return err_set(x->err, CODE_DATALOG_BUDGET, NULL, 0, "the row budget of %llu rows is exceeded", (unsigned long long)x->budget);
+#endif
   return STATUS_OK;
 }
 
@@ -381,7 +402,12 @@ Status engine_eval(Engine *x, Err *e) {
   x->err = e;
   Program *p = x->prog;
   size_t n = p->rels.n;
-  for (int comp = 0; comp < x->strata.ncomps; comp++) {
+  for (int ci = 0; ci < x->strata.ncomps; ci++) {
+#ifdef MUTANT_NEGEARLY
+    int comp = x->strata.ncomps - 1 - ci;
+#else
+    int comp = ci;
+#endif
     bool has_rules = false;
     for (size_t i = 0; i < x->naive.n; i++)
       if (x->naive.p[i].comp == comp) has_rules = true;
@@ -439,7 +465,7 @@ Status engine_replay(Engine *x, Err *e) {
     for (uint32_t row = 0; row < t->count; row++) {
       if (t->org_kind[row] != ORG_RULE) continue;
       const Variant *v = naive_variant(x, t->org_ref[row]);
-      I128 cells[MAXCOLS];
+      I128 *cells = x->cells;
       for (int c = 0; c < t->ncols; c++) cells[c] = tcell(t, c, row);
       x->mode = MODE_REPLAY;
       x->cur = v;

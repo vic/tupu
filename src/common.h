@@ -30,8 +30,9 @@ typedef enum {
 
 typedef struct {
   Code code;
-  const char *file; /* NULL: a code of the whole run */
+  const char *file; /* NULL: a code of the whole run; else points into filebuf */
   long line;
+  char filebuf[512];
   char text[256];
 } Err;
 

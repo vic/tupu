@@ -74,36 +74,48 @@ static Status build_atom_step(PCtx *c, const Lit *l, bool *bound, StepKind kind,
   bool *seen = arena_alloc(&c->p->arena, (size_t)(c->rule->nvars + 1));
   if (seen == NULL) return err_oom(c->e);
   memset(seen, 0, (size_t)(c->rule->nvars + 1));
-  uint32_t mask = 0;
+  uint32_t nbound = 0;
   bool wild = false;
+  st->cols = arena_alloc(&c->p->arena, ((size_t)a->nargs + 1) * sizeof *st->cols);
+  if (st->cols == NULL) return err_oom(c->e);
   for (int i = 0; i < a->nargs; i++) {
     const Expr *x = a->args[i];
     ArgSlot *s = &st->args[i];
     memset(s, 0, sizeof *s);
-    if (x->kind == EX_NUM) { s->k = AS_CONST; s->val = x->num; mask |= (uint32_t)1 << i; }
-    else if (x->kind == EX_SYM) { s->k = AS_CONST; s->val = (I128)x->sym; mask |= (uint32_t)1 << i; }
+    if (x->kind == EX_NUM) { s->k = AS_CONST; s->val = x->num; st->cols[nbound++] = (uint32_t)i; }
+    else if (x->kind == EX_SYM) { s->k = AS_CONST; s->val = (I128)x->sym; st->cols[nbound++] = (uint32_t)i; }
     else if (x->kind == EX_WILD) { s->k = AS_WILD; wild = true; }
     else {
       s->var = x->var;
-      if (bound[x->var]) { s->k = AS_BOUND; mask |= (uint32_t)1 << i; }
+      if (bound[x->var]) { s->k = AS_BOUND; st->cols[nbound++] = (uint32_t)i; }
       else if (seen[x->var]) s->k = AS_EQ;
       else { s->k = AS_FREE; seen[x->var] = true; }
     }
   }
-  st->mask = mask;
+#ifdef MUTANT_IDXDROP
+  if (kind == ST_ATOM && nbound > 0) {
+    st->args[st->cols[nbound - 1]].k = AS_WILD;
+    nbound--;
+  }
+#endif
+  st->nbound = nbound;
   st->exact = !wild && kind == ST_NEG;
   if (kind == ST_ATOM) {
     for (int i = 0; i < a->nargs; i++)
       if (st->args[i].k == AS_FREE) bound[st->args[i].var] = true;
     if (!top || delta_pos < 0) st->range = RANGE_FULL;
+#ifdef MUTANT_FULLDELTA
+    else if (pos == delta_pos) st->range = RANGE_FULL;
+#else
     else if (pos == delta_pos) st->range = RANGE_DELTA;
+#endif
     else if (c->s->comp[a->rel] == c->comp) st->range = pos < delta_pos ? RANGE_FULL : RANGE_PREV;
     else st->range = RANGE_FULL;
-    if (st->range != RANGE_DELTA && mask != 0) {
-      if (table_index(&c->tabs[a->rel], mask, &st->idx, c->e) != STATUS_OK) return STATUS_ERR;
+    if (st->range != RANGE_DELTA && st->nbound != 0) {
+      if (table_index(&c->tabs[a->rel], st->cols, st->nbound, &st->idx, c->e) != STATUS_OK) return STATUS_ERR;
     }
-  } else if (mask != 0 && !st->exact) {
-    if (table_index(&c->tabs[a->rel], mask, &st->idx, c->e) != STATUS_OK) return STATUS_ERR;
+  } else if (st->nbound != 0 && !st->exact) {
+    if (table_index(&c->tabs[a->rel], st->cols, st->nbound, &st->idx, c->e) != STATUS_OK) return STATUS_ERR;
   }
   return STATUS_OK;
 }

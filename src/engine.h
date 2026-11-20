@@ -40,6 +40,7 @@ typedef struct Engine {
   bool prov;
   /* execution state */
   I128 *vars;
+  I128 *scratch, *hv, *cells; /* one row of cells each: lookup keys, head rows, program facts and replay */
   uint32_t *body;
   RelRange *rr;
   Buf buf;
@@ -51,7 +52,7 @@ typedef struct Engine {
   const I128 *target;
   const uint32_t *target_body;
   bool found;
-  uint64_t rows_derived, probes, rounds; /* counters of the bench (E-performance) */
+  uint64_t derivations, rows_derived, probes, rounds; /* counters of the bench (E-performance) */
 } Engine;
 
 Status engine_open(Engine *x, Program *p, const char *facts_dir, uint64_t budget, bool prov, Err *e);

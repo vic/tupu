@@ -17,6 +17,6 @@ Status stratify(Program *p, Strata *s, Err *e);
 void strata_free(Strata *s);
 
 /* type sets: intersection and emptiness, for the planner and the checker */
-bool ts_empty(const TypeSet *t);
+bool ts_empty(const Program *p, const TypeSet *t);
 
 #endif

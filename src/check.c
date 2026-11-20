@@ -2,33 +2,32 @@
 #include <stdlib.h>
 #include <string.h>
 
-bool ts_empty(const TypeSet *t) {
+bool ts_empty(const Program *p, const TypeSet *t) {
   if (t->sym || t->num) return false;
-  for (int i = 0; i < TYPE_WORDS; i++)
+  for (size_t i = 0; t->sub != NULL && i < p->tywords; i++)
     if (t->sub[i] != 0) return false;
   return true;
 }
 
-static TypeSet ts_universe(const Program *p) {
-  TypeSet t;
-  t.sym = t.num = true;
-  for (int i = 0; i < TYPE_WORDS; i++) t.sub[i] = p->symmask[i] | p->nummask[i];
-  return t;
+static uint64_t sub_word(const TypeSet *t, size_t i) { return t->sub == NULL ? 0 : t->sub[i]; }
+
+/* the intersection of a and b, word i of the subtype part */
+static uint64_t meet_word(const Program *p, const TypeSet *a, const TypeSet *b, size_t i) {
+  uint64_t aw = sub_word(a, i), bw = sub_word(b, i);
+  uint64_t s = aw & bw;
+  if (b->sym) s |= aw & p->symmask[i];
+  if (b->num) s |= aw & p->nummask[i];
+  if (a->sym) s |= bw & p->symmask[i];
+  if (a->num) s |= bw & p->nummask[i];
+  return s;
 }
 
-static TypeSet ts_meet(const Program *p, const TypeSet *a, const TypeSet *b) {
-  TypeSet r;
-  r.sym = a->sym && b->sym;
-  r.num = a->num && b->num;
-  for (int i = 0; i < TYPE_WORDS; i++) {
-    uint64_t s = a->sub[i] & b->sub[i];
-    if (b->sym) s |= a->sub[i] & p->symmask[i];
-    if (b->num) s |= a->sub[i] & p->nummask[i];
-    if (a->sym) s |= b->sub[i] & p->symmask[i];
-    if (a->num) s |= b->sub[i] & p->nummask[i];
-    r.sub[i] = s;
-  }
-  return r;
+/* a and b have a common member */
+static bool ts_meets(const Program *p, const TypeSet *a, const TypeSet *b) {
+  if ((a->sym && b->sym) || (a->num && b->num)) return true;
+  for (size_t i = 0; i < p->tywords; i++)
+    if (meet_word(p, a, b, i) != 0) return true;
+  return false;
 }
 
 static bool name_eq(Name a, const char *s) { return a.n == strlen(s) && memcmp(a.s, s, a.n) == 0; }
@@ -61,14 +60,26 @@ static Status resolve_type(Program *p, size_t upto, Name n, long line, const cha
 }
 
 static Status build_types(Program *p, Err *e) {
+  size_t nsub = 0;
+  for (size_t i = 0; i < p->types.n; i++)
+    if (p->types.p[i].kind == TD_SUBTYPE) nsub++;
+  if (nsub >= UINT32_MAX) return err_set(e, CODE_PARSE, NULL, 0, "too many subtypes");
+  p->tywords = nsub == 0 ? 1 : (nsub + 63) / 64;
+  p->symmask = arena_alloc(&p->arena, p->tywords * sizeof *p->symmask);
+  p->nummask = arena_alloc(&p->arena, p->tywords * sizeof *p->nummask);
+  if (p->symmask == NULL || p->nummask == NULL) return err_oom(e);
+  memset(p->symmask, 0, p->tywords * sizeof *p->symmask);
+  memset(p->nummask, 0, p->tywords * sizeof *p->nummask);
   for (size_t i = 0; i < p->types.n; i++) {
     TypeDef *t = &p->types.p[i];
     if (name_eq(t->name, "symbol") || name_eq(t->name, "number") || find_type(p, i, t->name) != NULL)
       return err_set(e, CODE_PARSE, t->file, t->line, "type %.*s is defined twice", (int)t->name.n, t->name.s);
     memset(&t->set, 0, sizeof t->set);
+    t->set.sub = arena_alloc(&p->arena, p->tywords * sizeof *t->set.sub);
+    if (t->set.sub == NULL) return err_oom(e);
+    memset(t->set.sub, 0, p->tywords * sizeof *t->set.sub);
     if (t->kind == TD_SUBTYPE) {
-      if (p->nsubtypes >= 64 * TYPE_WORDS) return err_set(e, CODE_PARSE, t->file, t->line, "too many subtypes");
-      int k = p->nsubtypes++;
+      size_t k = (size_t)p->nsubtypes++;
       t->set.sub[k / 64] |= (uint64_t)1 << (k % 64);
       if (t->base == BASE_SYMBOL) p->symmask[k / 64] |= (uint64_t)1 << (k % 64);
       else p->nummask[k / 64] |= (uint64_t)1 << (k % 64);
@@ -80,11 +91,11 @@ static Status build_types(Program *p, Err *e) {
         Base mb;
         if (resolve_type(p, i, t->members[m], t->line, t->file, &ms, &mb, e) != STATUS_OK) return STATUS_ERR;
         if (first) t->setbase = mb;
-        else if (mb != t->setbase) return err_set(e, CODE_PARSE, t->file, t->line, "a union mixes symbol and number types");
+        else if (mb != t->setbase) return err_set(e, CODE_TYPE_MISMATCH, t->file, t->line, "a union mixes symbol and number types");
         first = false;
         t->set.sym = t->set.sym || ms.sym;
         t->set.num = t->set.num || ms.num;
-        for (int w = 0; w < TYPE_WORDS; w++) t->set.sub[w] |= ms.sub[w];
+        for (size_t w = 0; ms.sub != NULL && w < p->tywords; w++) t->set.sub[w] |= ms.sub[w];
       }
     }
   }
@@ -116,26 +127,30 @@ typedef struct {
   Err *e;
 } TyCtx;
 
+/* var := var meet with, in place; an empty result is a type mismatch */
 static Status ty_narrow(TyCtx *c, int var, const TypeSet *with, long line) {
-  TypeSet m = ts_meet(c->p, &c->vars[var], with);
-  if (ts_empty(&m)) return err_set(c->e, CODE_TYPE_MISMATCH, c->file, line, "a variable has no common type in its columns");
-  if (memcmp(&m, &c->vars[var], sizeof m) != 0) {
-    c->vars[var] = m;
-    c->changed = true;
+  const Program *p = c->p;
+  TypeSet *v = &c->vars[var];
+  bool nsym = v->sym && with->sym, nnum = v->num && with->num, any = nsym || nnum, changed = nsym != v->sym || nnum != v->num;
+  for (size_t i = 0; i < p->tywords; i++) {
+    uint64_t m = meet_word(p, v, with, i);
+    if (m != v->sub[i]) changed = true;
+    v->sub[i] = m;
+    if (m != 0) any = true;
   }
+  v->sym = nsym;
+  v->num = nnum;
+  if (!any) return err_set(c->e, CODE_TYPE_MISMATCH, c->file, line, "a variable has no common type in its columns");
+  if (changed) c->changed = true;
   return STATUS_OK;
 }
 
 static TypeSet ts_num(void) {
-  TypeSet t;
-  memset(&t, 0, sizeof t);
-  t.num = true;
+  TypeSet t = { false, true, NULL };
   return t;
 }
 static TypeSet ts_sym(void) {
-  TypeSet t;
-  memset(&t, 0, sizeof t);
-  t.sym = true;
+  TypeSet t = { true, false, NULL };
   return t;
 }
 
@@ -144,7 +159,6 @@ static TypeSet ty_of(TyCtx *c, const Expr *x) {
   case EX_NUM: return ts_num();
   case EX_SYM: return ts_sym();
   case EX_VAR: return c->vars[x->var];
-  case EX_WILD: return ts_universe(c->p);
   default: return ts_num();
   }
 }
@@ -157,14 +171,12 @@ static Status ty_expr(TyCtx *c, const Expr *x, const TypeSet *req) {
   case EX_NUM:
   case EX_SYM: {
     TypeSet t = ty_of(c, x);
-    TypeSet m = ts_meet(c->p, &t, req);
-    if (ts_empty(&m)) return err_set(c->e, CODE_TYPE_MISMATCH, c->file, x->line, "a literal does not fit its column");
+    if (!ts_meets(c->p, &t, req)) return err_set(c->e, CODE_TYPE_MISMATCH, c->file, x->line, "a literal does not fit its column");
     return STATUS_OK;
   }
   default: {
     TypeSet n = ts_num();
-    TypeSet m = ts_meet(c->p, &n, req);
-    if (ts_empty(&m)) return err_set(c->e, CODE_TYPE_MISMATCH, c->file, x->line, "an arithmetic term does not fit its column");
+    if (!ts_meets(c->p, &n, req)) return err_set(c->e, CODE_TYPE_MISMATCH, c->file, x->line, "an arithmetic term does not fit its column");
     if (x->kind == EX_FN && x->fn == FN_ORD) {
       TypeSet s = ts_sym();
       return ty_expr(c, x->a, &s);
@@ -190,9 +202,10 @@ static Status ty_lit(TyCtx *c, const Lit *l) {
   case LIT_CMP: {
     if (l->cmp == CMP_EQ || l->cmp == CMP_NE) {
       TypeSet a = ty_of(c, l->l), b = ty_of(c, l->r);
-      TypeSet m = ts_meet(c->p, &a, &b);
-      if (ts_empty(&m)) return err_set(c->e, CODE_TYPE_MISMATCH, c->file, l->line, "the two sides of a comparison have no common type");
+      if (!ts_meets(c->p, &a, &b)) return err_set(c->e, CODE_TYPE_MISMATCH, c->file, l->line, "the two sides of a comparison have no common type");
       if (ty_expr(c, l->l, &b) != STATUS_OK) return STATUS_ERR;
+      /* the left side may have been narrowed: read the right side against the new left set */
+      a = ty_of(c, l->l);
       return ty_expr(c, l->r, &a);
     }
     TypeSet n = ts_num();
@@ -212,11 +225,17 @@ static Status ty_lit(TyCtx *c, const Lit *l) {
 }
 
 static Status check_rule_types(Program *p, const Rule *r, Err *e) {
-  TypeSet *vars = arena_alloc(&p->arena, (size_t)(r->nvars + 1) * sizeof *vars);
-  if (vars == NULL) return err_oom(e);
-  for (int i = 0; i < r->nvars; i++) vars[i] = ts_universe(p);
+  size_t nv = (size_t)r->nvars;
+  TypeSet *vars = arena_alloc(&p->arena, (nv + 1) * sizeof *vars);
+  uint64_t *words = arena_alloc(&p->arena, (nv + 1) * p->tywords * sizeof *words);
+  if (vars == NULL || words == NULL) return err_oom(e);
+  for (size_t i = 0; i < nv; i++) {
+    vars[i].sym = vars[i].num = true;
+    vars[i].sub = words + i * p->tywords;
+    for (size_t w = 0; w < p->tywords; w++) vars[i].sub[w] = p->symmask[w] | p->nummask[w];
+  }
   TyCtx c = { p, vars, true, r->file, e };
-  for (int pass = 0; c.changed && pass < r->nvars + 3; pass++) {
+  for (size_t pass = 0; c.changed && pass < nv + 3; pass++) {
     c.changed = false;
     if (ty_atom(&c, &r->head) != STATUS_OK) return STATUS_ERR;
     for (int i = 0; i < r->nlits; i++)
@@ -232,6 +251,9 @@ Status check_program(Program *p, Err *e) {
     for (size_t j = 0; j < i; j++)
       if (names_eq(p->rels.p[j].name, r->name))
         return err_set(e, CODE_PARSE, r->file, r->line, "relation %.*s is declared twice", (int)r->name.n, r->name.s);
+    r->colset = arena_alloc(&p->arena, ((size_t)r->ncols + 1) * sizeof *r->colset);
+    r->colkind = arena_alloc(&p->arena, ((size_t)r->ncols + 1) * sizeof *r->colkind);
+    if (r->colset == NULL || r->colkind == NULL) return err_oom(e);
     for (int c = 0; c < r->ncols; c++) {
       Base b;
       if (resolve_type(p, p->types.n, r->coltype[c], r->line, r->file, &r->colset[c], &b, e) != STATUS_OK) return STATUS_ERR;

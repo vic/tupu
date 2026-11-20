@@ -1,4 +1,4 @@
-/* Tables (E3), dedup sets (E5), indexes (E6) and the facts reader (ruling S82 2, 8, 10). */
+/* Tables (E3), dedup sets (E5), indexes (E6) and the facts reader (rulings S82 2, 8, 10). */
 #ifndef TUPU_TABLE_H
 #define TUPU_TABLE_H
 #include "ast.h"
@@ -6,7 +6,8 @@
 typedef enum { ORG_INPUT, ORG_FACT, ORG_RULE } Origin;
 
 typedef struct {
-  uint32_t mask; /* bound columns */
+  uint32_t *cols; /* the bound columns, ascending */
+  uint32_t nb;
   uint64_t *hash;
   uint32_t *first;
   uint8_t *used;
@@ -18,9 +19,9 @@ typedef struct {
 
 typedef struct {
   int ncols;
-  Base kind[MAXCOLS];
+  Base *kind;
   uint32_t count, cap;
-  void *col[MAXCOLS]; /* uint32_t symbol ids or I128 */
+  void **col; /* per column: uint32_t symbol ids or I128 */
   uint8_t *org_kind;
   uint32_t *org_ref; /* rule index, program fact index, or 0 for input rows */
   uint32_t *round;
@@ -39,15 +40,16 @@ static inline I128 tcell(const Table *t, int c, uint32_t row) {
   return t->kind[c] == BASE_SYMBOL ? (I128)((const uint32_t *)t->col[c])[row] : ((const I128 *)t->col[c])[row];
 }
 
-void table_init(Table *t, const Relation *r, bool want_prov);
+Status table_init(Table *t, const Relation *r, bool want_prov, Err *e);
 void table_free(Table *t);
 /* add a row (dedup): *added tells whether it was new. A table past 2^32-2 rows is datalog-budget. */
 Status table_add(Table *t, const I128 *vals, Origin org, uint32_t ref, uint32_t round, const uint32_t *body, int nbody,
                  bool *added, Err *e);
 bool table_contains(const Table *t, const I128 *vals);
 
-uint64_t hash_cells(const Table *t, uint32_t mask, const I128 *vals_by_col);
-Status table_index(Table *t, uint32_t mask, Index **out, Err *e);
+/* hash of the cells at `cols` (ascending) taken from vals_by_col[column] */
+uint64_t hash_cells(const Table *t, const uint32_t *cols, uint32_t nb, const I128 *vals_by_col);
+Status table_index(Table *t, const uint32_t *cols, uint32_t nb, Index **out, Err *e);
 Status index_sync(Index *ix, const Table *t, Err *e);
 /* first row of the chain of this hash; false when none */
 bool index_find(const Index *ix, uint64_t hash, uint32_t *row);

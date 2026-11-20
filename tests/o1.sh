@@ -12,8 +12,13 @@ for d in tests/o1/evaluation/* tests/o1/example/*; do
   prog=$d/$name.dl
   [ -f "$prog" ] || prog=$d/$(ls "$d" | grep '\.dl$' | grep -v edb | head -1)
   facts=$d/facts; [ -d "$facts" ] || { facts=$T/empty; mkdir -p "$facts"; }
-  rm -rf "$T/out"; mkdir -p "$T/out"
-  mcpp -e utf8 -W0 "$prog" 2> /dev/null | timeout 5 "$BIN" -F "$facts" -D "$T/out" - 2> "$T/err"; st=$?
+  rm -rf "$T/out" "$T/prov"; mkdir -p "$T/out" "$T/prov"
+  if [ -n "${SEED:-}" ]; then
+    rm -rf "$T/sf"; mkdir -p "$T/sf"
+    for f in "$facts"/*.facts; do [ -f "$f" ] && sh tests/shuffle.sh "$SEED" -f "$f" > "$T/sf/$(basename "$f")"; done
+    facts=$T/sf; shuf_cmd="sh tests/shuffle.sh $SEED"
+  else shuf_cmd=cat; fi
+  mcpp -e utf8 -W0 "$prog" 2> /dev/null | $shuf_cmd | timeout 20 "$BIN" -F "$facts" -D "$T/out" ${PROVFLAG:+-P "$T/prov"} - 2> "$T/err"; st=$?
   if [ $st != 0 ]; then echo "O1 $name REFUSED exit=$st $(head -c 160 "$T/err")"; rc=1; continue; fi
   ok=0; bad=0; rows=0
   for csv in "$d"/*.csv; do

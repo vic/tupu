@@ -4,15 +4,12 @@
 #include "common.h"
 #include "sym.h"
 
-#define MAXCOLS 16
-#define TYPE_WORDS 4 /* at most 256 subtypes */
-
 typedef enum { BASE_SYMBOL, BASE_NUMBER } Base;
 
 /* a type is a set of values: all symbols, all numbers, or a set of subtypes (each a subset of one base) */
 typedef struct {
   bool sym, num;
-  uint64_t sub[TYPE_WORDS];
+  uint64_t *sub; /* one bit per subtype, Program.tywords words; NULL stands for the empty set of subtypes */
 } TypeSet;
 
 typedef struct {
@@ -80,10 +77,10 @@ typedef struct {
   const char *file;
   long line;
   int ncols;
-  Name coltype[MAXCOLS];
+  Name *coltype;
   /* filled by check.c */
-  TypeSet colset[MAXCOLS];
-  Base colkind[MAXCOLS];
+  TypeSet *colset;
+  Base *colkind;
   bool is_input, is_output;
   int comp;
 } Relation;
@@ -115,7 +112,8 @@ typedef struct {
   struct { Mention *p; size_t n, cap; } inputs, outputs;
   struct { Rule *p; size_t n, cap; } rules;
   struct { Fact *p; size_t n, cap; } facts;
-  uint64_t symmask[TYPE_WORDS], nummask[TYPE_WORDS]; /* subtypes of each base */
+  size_t tywords;
+  uint64_t *symmask, *nummask; /* subtypes of each base */
   int nsubtypes;
 } Program;
 

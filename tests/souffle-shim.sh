@@ -19,7 +19,17 @@ T=$(mktemp -d "${TMPDIR:-/tmp}/shim.XXXXXX")
 trap 'rm -rf "$T"' EXIT
 # shellcheck disable=SC2086
 mcpp -e utf8 -W0 $defs "$file" > "$T/pp.dl" 2> "$T/mcpp.err" || { echo "Error: mcpp failed: $(head -1 "$T/mcpp.err")"; exit 1; }
-timeout 20 "$TUPU" -F "$facts" -D - "$T/pp.dl" > "$T/out" 2> "$T/err"; st=$?
+if [ -n "${TUPU_SHUFFLE:-}" ]; then
+  here=$(dirname "$0")
+  sh "$here/shuffle.sh" "$TUPU_SHUFFLE" < "$T/pp.dl" > "$T/pp2.dl" && mv "$T/pp2.dl" "$T/pp.dl"
+  mkdir -p "$T/sf"
+  for f in "$facts"/*.facts; do [ -f "$f" ] && sh "$here/shuffle.sh" "$TUPU_SHUFFLE" -f "$f" > "$T/sf/$(basename "$f")"; done
+  facts=$T/sf
+fi
+mkdir -p "$T/prov"
+provflag=""; [ -n "${TUPU_PROV:-}" ] && provflag="-P $T/prov"
+# shellcheck disable=SC2086
+timeout 60 "$TUPU" -F "$facts" -D - $provflag "$T/pp.dl" > "$T/out" 2> "$T/err"; st=$?
 if [ $st -ne 0 ]; then echo "Error: $(head -1 "$T/err")"; exit 1; fi
 awk -v ppfile="$T/pp.dl" '
   BEGIN {

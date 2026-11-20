@@ -10,6 +10,7 @@ typedef struct {
 } Text;
 
 static Status text_put(Text *t, const char *s, size_t n, Err *e) {
+  if (n == 0) return STATUS_OK;
   if (t->n + n > t->cap) {
     size_t nc = t->cap == 0 ? 4096 : t->cap * 2;
     while (nc < t->n + n) nc *= 2;
