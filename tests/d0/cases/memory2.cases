@@ -122,3 +122,20 @@ mq sumTwice -MMUTANT_NOPOINTINST
 mq freeFar -MMUTANT_FREEFIRST
 mq freeFar "-MMUTANT_FREEFIRST MUTANT_NOFREEDPROP"
 mq freeOk "-MMUTANT_NOFREE MUTANT_NOPENDPROP"
+
+# ruling S70: Array.tryGrow takes its object by move (consume) and ends it; the GrowFailed arm owns it again (regain).
+# p1 allocates the old array a; p2 is the call; g and g2 stand on the Grown arm (new array w); f and f2 on the GrowFailed arm.
+m5 growStale; f heap h; f alloc 'a h p1' 'w h g'; f consume 'p2 a'; f regain 'f a'; f next 'p1 p2' 'p2 g' 'p2 f' 'g g2' 'f f2'; f use 'g2 w' 'g2 a' 'f2 a'; f exit g2 f2
+m5 growOk; f heap h; f alloc 'a h p1' 'w h g'; f consume 'p2 a'; f next 'p1 p2' 'p2 g' 'g g2'; f use 'g2 w'; f exit g2
+m5 growFailedOk; f heap h; f alloc 'a h p1' 'w h g'; f consume 'p2 a'; f regain 'f a'; f next 'p1 p2' 'p2 g' 'p2 f' 'g g2' 'f f2'; f use 'g2 w' 'f2 a'; f exit g2 f2
+m5 growFailedReturn; f heap h; f alloc 'a h p1' 'w h g'; f consume 'p2 a'; f regain 'f a'; f next 'p1 p2' 'p2 g' 'p2 f' 'g g2'; f returnOf 'f a'; f use 'g2 w'; f exit g2 f
+m5 growRealloc; f heap h; f alloc 'a h p1' 'a h p3'; f consume 'p2 a'; f next 'p1 p2' 'p2 px' 'px p3' 'p3 p4'; f use 'p4 a'; f exit p4
+for x in growStale growOk growFailedOk growFailedReturn growRealloc; do mq $x; done
+ro growFailedOk '' freeAtExit
+mq growStale -MMUTANT_CONSUMEREAD
+mq growStale -MMUTANT_NOCONSUMEDPROP
+mq growFailedOk -MMUTANT_NOREGAIN
+mq growRealloc -MMUTANT_NOCONSUMEDKILL
+mq growOk -MMUTANT_NOCONSUMEMOVE
+ro growFailedOk -MMUTANT_NOREGAINLOCAL freeAtExit
+mq growFailedReturn -MMUTANT_NOREGAINMOVED

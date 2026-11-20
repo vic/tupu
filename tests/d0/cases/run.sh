@@ -22,8 +22,16 @@ new_case() {
 # Jobs: run and verdict queue one Souffle call each (arguments one per line in job.N); the jobs run in parallel and
 # their lines are printed in queue order at the end, so the output never depends on timing.
 n=0
-# ONLY=glob runs only the cases whose name matches (splits a family under the command cap)
-queue() { case "$3" in ${ONLY:-*}) ;; *) return 0 ;; esac; n=$((n+1)); printf "%s\n" "$@" > "$W/job.$n"; fillrows "$3"; }
+q=0
+# ruling S88: RANGE=lo-hi runs only the jobs at the positions lo to hi of the family queue (1-based, counted at every
+# queue call before any filter), so a fixed list of ranges prints the family stream in pieces that concatenate to it;
+# COUNT=1 prints the number of jobs of the family and runs none. ONLY=glob (cases whose name matches) is for diagnostics only.
+queue() {
+  q=$((q+1)); fillrows "$3"
+  case "$3" in ${ONLY:-*}) ;; *) return 0 ;; esac
+  if [ -n "${RANGE:-}" ]; then [ "$q" -ge "${RANGE%-*}" ] && [ "$q" -le "${RANGE#*-}" ] || return 0; fi
+  n=$((n+1)); printf "%s\n" "$@" > "$W/job.$n"
+}
 # ruling S37: a case with operation rows and no row table of its own gets the generic table (every operation kind
 # requires the row OperationRow and the case emits it); a case that states its own requiresRow rows is left alone
 fillrows() {
@@ -55,7 +63,9 @@ if [ -n "${COVER:-}" ]; then : > "$W/res.$i"; else
     awk -v want="$rel" "/^---------------\$/ { getline name; cur=name; next } /^===============\$/ { inrows = !inrows; next } inrows && cur == want { print }" "$W/out.$i" | sort | tr "\t\n" "/ "
     tr "\n" " " < "$W/err.$i"
   elif [ "$kind" = run ]; then
-    $SOUFFLE ${mut:+"$mut"} -F "$W/$cas" "../${file:-$fam}.dl" 2>&1 | grep -v -e "^===" -e "^subject" -e "^v	p" | tr "\n" " " | tr "\t" "/"
+    $SOUFFLE ${mut:+"$mut"} -F "$W/$cas" "../${file:-$fam}.dl" 2>&1 | grep -v -e "^===" -e "^subject" -e "^v	p" |
+      awk '$0 == "---------------" { getline name; print name "\t"; next } { print name "\t" $0 }' | LC_ALL=C sort |
+      awk -F"\t" '$1 != cur { cur = $1; printf "--------------- %s ", cur } { row = substr($0, length($1) + 2) } row != "" { printf "%s ", row }' | tr "\t" "/"   # ruling S84: blocks by relation name, rows by bytes
   else
     $SOUFFLE ${mut:+"$mut"} -F "$W/$cas" "../${file:-$fam}.dl" > "$W/out.$i" 2> "$W/err.$i" || printf "SOUFFLE-FAILED "
     awk "/^====/ { n++; next } n == 1 { print }" "$W/out.$i" | sort | tr "\t\n" "/ "
@@ -180,6 +190,7 @@ want stack && . ./stack.cases
 want refuse && . ./refuse.cases
 want corpus && . ./corpus.cases
 
+if [ -n "${COUNT:-}" ]; then echo "$q"; exit 0; fi
 # run every queued job (10 at a time) and print the results in queue order
 export W SOUFFLE
 seq 1 "$n" | xargs -P 12 -I{} sh "$W/exec.sh" {}

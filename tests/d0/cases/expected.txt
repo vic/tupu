@@ -1,11 +1,11 @@
 bounds pos : --------------- reject 
 bounds noinv : --------------- reject exit/exit-unproved 
 bounds step2 : --------------- reject addIndex/overflow-unproved backA/invariant-unproved backB/invariant-unproved 
-bounds noguard : --------------- reject addMatches/overflow-unproved addIndex/overflow-unproved read/index-unproved backA/invariant-unproved backB/invariant-unproved 
+bounds noguard : --------------- reject addIndex/overflow-unproved addMatches/overflow-unproved backA/invariant-unproved backB/invariant-unproved read/index-unproved 
 bounds match2 : --------------- reject addMatches/overflow-unproved backA/invariant-unproved 
 bounds match2 -MMUTANT_MONOTONE: --------------- reject addMatches/overflow-unproved 
 bounds match2 -MMUTANT_PHI: --------------- reject addMatches/overflow-unproved 
-bounds noguard -MMUTANT_SELF: --------------- reject read/index-unproved backB/invariant-unproved 
+bounds noguard -MMUTANT_SELF: --------------- reject backB/invariant-unproved read/index-unproved 
 bounds step2 -MMUTANT_UPPER: --------------- reject backB/invariant-unproved 
 bounds axRefl : 
 bounds axU64Zero : 
@@ -16,6 +16,9 @@ bounds axTransBL :
 bounds axTransLB : 
 bounds axTransLL : 
 bounds axSucc : 
+bounds wrOk : 
+bounds wrBad : wr/index-unproved 
+bounds mixedAccess : rw/index-unproved 
 bounds axRefl -MMUTANT_AX_REFL: e/exit-unproved 
 bounds axU64Zero -MMUTANT_AX_U64ZERO: e/exit-unproved 
 bounds axLitLeq -MMUTANT_AX_LITLEQ: e/exit-unproved 
@@ -25,6 +28,8 @@ bounds axTransBL -MMUTANT_AX_TRANSBL: rd/index-unproved
 bounds axTransLB -MMUTANT_AX_TRANSLB: rd/index-unproved 
 bounds axTransLL -MMUTANT_AX_TRANSLL: e/exit-unproved 
 bounds axSucc -MMUTANT_AX_SUCC: e/exit-unproved 
+bounds wrBad -MMUTANT_INDEXWRITEOFF: 
+bounds mixedAccess -MMUTANT_ANYACCESS: 
 memory heapOnce : --------------- freeAtExit --------------- freeEdge a/p2/p3 --------------- reject 
 memory arenaPhase : --------------- freeAtExit --------------- freeEdge --------------- reject 
 memory arenaGarbage : --------------- freeAtExit --------------- freeEdge --------------- reject a/dead-in-region 
@@ -120,6 +125,19 @@ memory sumTwice -MMUTANT_NOPOINTINST:
 memory freeFar -MMUTANT_FREEFIRST: a/double-free a/use-after-free 
 memory freeFar -MMUTANT_FREEFIRST MUTANT_NOFREEDPROP: a/use-after-free 
 memory freeOk -MMUTANT_NOFREE MUTANT_NOPENDPROP: 
+memory growStale : a/moved-twice 
+memory growOk : 
+memory growFailedOk : 
+memory growFailedReturn : 
+memory growRealloc : 
+memory growFailedOk : a/f2 w/g2 
+memory growStale -MMUTANT_CONSUMEREAD: 
+memory growStale -MMUTANT_NOCONSUMEDPROP: 
+memory growFailedOk -MMUTANT_NOREGAIN: a/moved-twice 
+memory growRealloc -MMUTANT_NOCONSUMEDKILL: a/moved-twice 
+memory growOk -MMUTANT_NOCONSUMEMOVE: a/value-unused 
+memory growFailedOk -MMUTANT_NOREGAINLOCAL: w/g2 
+memory growFailedReturn -MMUTANT_NOREGAINMOVED: a/moved-twice 
 arith addU8ok : 
 arith addU8over : addO/overflow-unproved 
 arith addI64max : addO/overflow-unproved 
@@ -164,7 +182,6 @@ arith quotLeq :
 arith andIndex : 
 arith andWide : rd/index-unproved 
 arith wrapIndex : rd/index-unproved 
-arith addI64max -MMUTANT_PLAINADD: 
 arith addI64max -MMUTANT_ADDHIGH: 
 arith addI64neg -MMUTANT_ADDLOW: 
 arith addChain -MMUTANT_ADDRESULT: addB/overflow-unproved 
@@ -273,9 +290,11 @@ flow rowsWriteMissing : w1/unmodeled-operation
 flow rowsAliasOk : 
 flow rowsAliasMissing : b1/unmodeled-operation 
 flow rowsUnknownKind : w1/unmodeled-operation 
+flow rowsWriteIndexMissing : w1/unmodeled-operation 
 flow rowsWriteMissing -MMUTANT_ANYROW: 
 flow rowsAliasMissing -MMUTANT_ANYROW: 
 flow rowsUnknownKind -MMUTANT_ROWSOFF: 
+flow rowsWriteIndexMissing -MMUTANT_ANYROW: 
 capabilities walkOk : 
 capabilities afterClose : c/capability-not-ended o2/op-not-allowed 
 capabilities notEnded : c/capability-not-ended 
@@ -289,6 +308,9 @@ capabilities capValue : a2/capability-value a3/capability-value a4/capability-va
 capabilities handlePlace : h2/handle-placement 
 capabilities denyAtViolated : p2/denial-violated 
 capabilities denyAtOk : 
+capabilities handleRegion : 
+capabilities handleMarker : h1/handle-on-marker 
+capabilities handleNoTarget : h1/handle-on-marker 
 capabilities walkOk -MMUTANT_NOCARRY: c/capability-not-ended 
 capabilities walkOk -MMUTANT_NOFLOW: c/capability-not-ended o2/op-not-allowed 
 capabilities loopMixed -MMUTANT_MIXEDOFF: h/loop-state 
@@ -300,6 +322,7 @@ capabilities unknownState -MMUTANT_STATEREFOFF:
 capabilities capValue -MMUTANT_CAPVALUEOFF: 
 capabilities handlePlace -MMUTANT_HANDLEOFF: 
 capabilities denyAtViolated -MMUTANT_DENYATOFF: 
+capabilities handleMarker -MMUTANT_MARKERANY: 
 names refOk : 
 names refUnresolved : r1/unresolved-name 
 names refPrivate : r1/private-reference 
@@ -365,6 +388,9 @@ types arityOk :
 types arityBad : a1/arity a2/type-arity a3/pattern-arity 
 types linear : l1/length-not-linear 
 types recursive : A/recursive-type B/recursive-type C/recursive-type 
+types recArray : Node/recursive-type 
+types recMixed : A/recursive-type B/recursive-type 
+types treeOk : 
 types fuel : e1/type-fuel e2/evaluation-fuel e3/not-compile-time 
 types matchCases : m2/not-exhaustive m3/not-exhaustive 
 types wildcard : m2/wildcard-arm 
@@ -377,6 +403,8 @@ types inferTwo -MMUTANT_INFEROFF:
 types arityBad -MMUTANT_ARITYOFF: a3/pattern-arity 
 types linear -MMUTANT_LINEAROFF: 
 types recursive -MMUTANT_RECDIRECT: A/recursive-type 
+types recArray -MMUTANT_NOELEMENT: 
+types recMixed -MMUTANT_NOELEMENT: 
 types fuel -MMUTANT_FUELOFF: e3/not-compile-time 
 types fuel -MMUTANT_EXTERNEVALOFF: e1/type-fuel e2/evaluation-fuel 
 types matchCases -MMUTANT_MISSINGCASEOFF: m3/not-exhaustive 

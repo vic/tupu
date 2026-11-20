@@ -1,0 +1,17 @@
+u64 addOver : addO/overflow-unproved
+u64 addGuard :
+u64 addChainBad : addB/overflow-unproved
+u64 guard2p32 : rd/index-unproved
+u64 guard2p64 : rd/index-unproved
+u64 guard4 :
+u64 subFree : subO/overflow-unproved
+u64 subOrder :
+u64 mulOver : mulO/overflow-unproved
+u64 mulOk :
+u64 divZero : divO/divisor-unproved
+u64 divPos :
+u64 shiftWide : shO/shift-unproved
+u64 shiftOk :
+u64 litHigh : k/literal-out-of-range
+u64 litMax :
+u64 remIndex :

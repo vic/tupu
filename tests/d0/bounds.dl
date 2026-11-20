@@ -141,7 +141,21 @@ lower(a, lx + ly, s) :- addOp(o, a, x, y, s0), addExact(o), dom(s, s0), valueTyp
 #endif
 
 // clearing rules
+// rulings S67, S83: every access row of the operation is proved; one proved row among several clears nothing
+#ifdef MUTANT_ANYACCESS
 cleared(o, "index-unproved") :- indexRead(o, i, n, s), below(i, n, s).
+cleared(o, "index-unproved") :- indexWrite(o, i, n, s), below(i, n, s).
+#else
+.decl missingIndex(o: Operation)
+missingIndex(o) :- indexRead(o, i, n, s), !below(i, n, s).
+cleared(o, "index-unproved") :- indexRead(o, _, _, _), !missingIndex(o).
+#ifdef MUTANT_INDEXWRITEOFF
+cleared(o, "index-unproved") :- indexWrite(o, _, _, _).
+#else
+missingIndex(o) :- indexWrite(o, i, n, s), !below(i, n, s).
+cleared(o, "index-unproved") :- indexWrite(o, _, _, _), !missingIndex(o).
+#endif
+#endif
 cleared(o, "overflow-unproved") :- addExact(o).
 // every owed order row of an operation and code must be proved (one negation over the completed order relations)
 #ifdef MUTANT_ANYROW

@@ -13,12 +13,16 @@ cap loopMixed; f next 'p1 h' 'h b' 'b h' 'h x'; f loopHead h; f handleRange 'c p
 mk providers; f capabilityOf 'cf File' 'cn Net'; f needsCapability 'okFile File' 'noProv File' 'two File' 'two Net'; f provider 'okFile cf' 'two cf'
 mk unknownState; f stateOf 'File Open'; f stateRef 'a1 File Open' 'a2 File Opn'
 mk capValue; f capabilityValueUse 'a1 v Row' 'a2 v Argument' 'a3 v Store' 'a4 v Return'
-mk handlePlace; f handleSite 'h1 Top' 'h2 Nested'
+mk handlePlace; f handleSite 'h1 Top' 'h2 Nested'; f handleTarget 'h1 Region' 'h2 Region'; f capabilityOperation 'Region tryAllocate'
+# ruling S68: a handle of a capability with an operation is accepted; a marker (no operation) and a handle with no target are rejected
+mk handleRegion; f handleSite 'h1 Top'; f handleTarget 'h1 Region'; f capabilityOperation 'Region tryAllocate'
+mk handleMarker; f handleSite 'h1 Top'; f handleTarget 'h1 Mut'; f capabilityOperation 'Region tryAllocate'
+mk handleNoTarget; f handleSite 'h1 Top'; f capabilityOperation 'Region tryAllocate'
 # facts.md 6: not (close(c1), at(c2, Open)); c1 has no states, close is the operation `drop` of c1
 dn() { cap "$1"; f capabilityOf 'c1 Other'; f denialAtom 'd1 k1' 'd1 k2'; f denyOperation 'd1 k1 c1 drop'; f denyState 'd1 k2 c Open'; f denialRange 'd1 p2'; }
 dn denyAtViolated; f next 'p1 p2' 'p2 p3'; f handleRange 'c p1 p3'; f operationCall 'o1 c1 drop p2' 'o3 c close p3'
 dn denyAtOk; f next 'p1 p2' 'p2 p3'; f handleRange 'c p1 p3'; f operationCall 'o0 c close p1' 'o1 c1 drop p2'
-for x in walkOk afterClose notEnded branchMixed branchSame loopOk loopMixed providers unknownState capValue handlePlace denyAtViolated denyAtOk; do cq $x; done
+for x in walkOk afterClose notEnded branchMixed branchSame loopOk loopMixed providers unknownState capValue handlePlace denyAtViolated denyAtOk handleRegion handleMarker handleNoTarget; do cq $x; done
 cq walkOk -MMUTANT_NOCARRY
 cq walkOk -MMUTANT_NOFLOW
 cq loopMixed -MMUTANT_MIXEDOFF
@@ -30,3 +34,4 @@ cq unknownState -MMUTANT_STATEREFOFF
 cq capValue -MMUTANT_CAPVALUEOFF
 cq handlePlace -MMUTANT_HANDLEOFF
 cq denyAtViolated -MMUTANT_DENYATOFF
+cq handleMarker -MMUTANT_MARKERANY

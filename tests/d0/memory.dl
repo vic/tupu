@@ -6,6 +6,7 @@
 // MUTANT_MOVEDOFF, MUTANT_OWNEROFF, MUTANT_ALIASOFF, MUTANT_RETAINOFF, MUTANT_EARLYFREE, MUTANT_NOFREE,
 // MUTANT_EXITDOUBLE, MUTANT_WRITEANY, MUTANT_STATICOFF, MUTANT_CAPOFF, MUTANT_FILLOFF, MUTANT_EXTOFF, MUTANT_ADDROFF,
 // MUTANT_NOLOCALPROP, MUTANT_NOHOLDSBASE, MUTANT_NODIRECTOUT, MUTANT_NODIRECTPROP, MUTANT_NOFREEDPROP, MUTANT_NOPENDPROP,
+// MUTANT_NOCONSUMEMOVE, MUTANT_NOREGAINLOCAL, MUTANT_NOREGAINMOVED, MUTANT_NOREGAIN, MUTANT_NOCONSUMEDPROP, MUTANT_NOCONSUMEDKILL, MUTANT_CONSUMEREAD (ruling S70),
 // MUTANT_NONEXTPLUS, MUTANT_FREEFIRST, MUTANT_NOPOINTINST (ruling S36), MUTANT_NOCONTENT, MUTANT_SIBLINGCONTENT, MUTANT_NOREADSSUM, MUTANT_NOREADSELEMENTS, MUTANT_NORETURNMOVE, MUTANT_NOHOLDSTRANS, MUTANT_NOOUTTRANS, MUTANT_NOMOVEDPROP, MUTANT_UNREACHREAD, MUTANT_RESFROMOFF, MUTANT_RESFRESHOFF, MUTANT_REGALLOC, MUTANT_REGEND, MUTANT_REGEXIT, MUTANT_REUSEANY.
 #ifndef STIGI_MEMORY
 #define STIGI_MEMORY
@@ -33,6 +34,10 @@ moveAt(p, v) :- move(p, v, _).
 moveAt(p, v) :- move(p, v, _), 1 = 2.
 #else
 moveAt(p, v) :- returnOf(p, v).
+#endif
+// ruling S70: the Array.tryGrow call takes its object by move and ends it
+#ifndef MUTANT_NOCONSUMEMOVE
+moveAt(p, v) :- consume(p, v).
 #endif
 overwriteAt(p, c) :- overwrite(p, c).
 allocatesAt(p) :- alloc(_, _, p).
@@ -109,6 +114,10 @@ local(v, q) :- local(v, p), next(p, q), 1 = 2.
 #else
 local(v, q) :- local(v, p), next(p, q), !moveAt(p, v), !alloc(v, _, p).
 #endif
+// ruling S70: on the GrowFailed arm the caller owns the old object again
+#ifndef MUTANT_NOREGAINLOCAL
+local(v, q) :- regain(q, v).
+#endif
 // alive(v, p): the local instance is still needed at p
 .decl alive(v: Value, p: Point)
 alive(v, p) :- alloc(v, _, p).
@@ -178,14 +187,38 @@ cleared(v, "value-unused") :- alloc(v, _, _), !unusedValue(v).
 .decl movedAfter(v: Value, p: Point)
 .decl movedTwice(v: Value)
 .decl ownerDiffers(v: Value)
-movedAfter(v, q) :- moveAt(p, v), next(p, q).
+// ruling S70: a regained object (the GrowFailed arm) is owned again, so a move before the arm does not reach it
+#ifdef MUTANT_NOREGAINMOVED
+#define MOVEDSTOP(q, v) 1 = 1
+#else
+#define MOVEDSTOP(q, v) !regain(q, v)
+#endif
+movedAfter(v, q) :- moveAt(p, v), next(p, q), MOVEDSTOP(q, v).
 #ifndef MUTANT_NOMOVEDPROP
-movedAfter(v, q) :- movedAfter(v, p), next(p, q), !alloc(v, _, p).
+movedAfter(v, q) :- movedAfter(v, p), next(p, q), !alloc(v, _, p), MOVEDSTOP(q, v).
 #endif
 #ifdef MUTANT_MOVEDOFF
 movedTwice(v) :- alloc(v, _, _), 1 = 2.
 #else
 movedTwice(v) :- moveAt(p, v), movedAfter(v, p).
+#endif
+// ruling S70: a read of the object after Array.tryGrow took it, before the regain, is moved-twice
+.decl consumedAfter(v: Value, p: Point)
+#ifdef MUTANT_NOREGAIN
+#define CONSUMESTOP(q, v) 1 = 1
+#else
+#define CONSUMESTOP(q, v) !regain(q, v)
+#endif
+consumedAfter(v, q) :- consume(p, v), next(p, q), CONSUMESTOP(q, v).
+#ifndef MUTANT_NOCONSUMEDPROP
+#ifdef MUTANT_NOCONSUMEDKILL
+consumedAfter(v, r) :- consumedAfter(v, q), next(q, r), CONSUMESTOP(r, v).
+#else
+consumedAfter(v, r) :- consumedAfter(v, q), next(q, r), CONSUMESTOP(r, v), !alloc(v, _, r).
+#endif
+#endif
+#ifndef MUTANT_CONSUMEREAD
+movedTwice(v) :- consumedAfter(v, q), reads(q, v).
 #endif
 #ifdef MUTANT_OWNEROFF
 ownerDiffers(v) :- alloc(v, _, _), 1 = 2.

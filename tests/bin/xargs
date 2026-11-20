@@ -1,0 +1,5 @@
+#!/bin/sh
+# S89 guard: tupu jobs use at most 6 CPUs; run.sh of the D0 snapshot asks for `xargs -P 12`.
+real=$(PATH=$REAL_PATH command -v xargs)
+if [ "${1:-}" = "-P" ] && [ "${2:-}" = "12" ]; then shift 2; exec "$real" -P 6 "$@"; fi
+exec "$real" "$@"

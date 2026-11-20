@@ -3,6 +3,8 @@
 # own cases, O1 with -P, the counters check and three D0 families, and print what flipped against the unmutated build.
 # usage: sh tests/o5.sh   (inside nix-shell; builds build/tupu-mut-NAME)
 set -u
+REAL_PATH=$PATH; export REAL_PATH
+PATH=$(pwd)/tests/bin:$PATH; export PATH
 rc=0
 MUTS=${*:-WRAPADD NOBUDGET NEGEARLY FULLDELTA IDXDROP DEDUPREL PROVBODY}
 FAMS="tests types contracts arith"
@@ -14,7 +16,7 @@ d0() { # BIN outfile
   : > "$2"
   for f in $FAMS; do ( cd tests/d0/cases && TUPU=$ROOT/$1 SOUFFLE=$ROOT/tests/souffle-shim.sh TUPU_PROV=1 sh run.sh "$f" 2>/dev/null | cut -c1-230 ) >> "$2"; done
 }
-d0 build/tupu "$O/base.d0"
+d0 "${BIN:-result/bin/tupu}" "$O/base.d0"
 echo "O5 baseline: d0 families [$FAMS] lines=$(wc -l < "$O/base.d0")"
 for m in $MUTS; do
   just mutant "$m" > /dev/null 2>&1 || { echo "O5 $m BUILD FAILED"; continue; }

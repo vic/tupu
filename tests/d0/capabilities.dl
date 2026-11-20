@@ -4,7 +4,7 @@
 // one point make `mixed`, and a clearing rule reads a state only where it is single. A clearing rule never rests on
 // the absence of a state: each one needs the state to exist (fail closed).
 // Mutants (cases/capabilities.cases): MUTANT_NOCARRY, MUTANT_NOFLOW, MUTANT_MIXEDOFF, MUTANT_BRANCHOFF, MUTANT_LOOPOFF,
-// MUTANT_ENDANY, MUTANT_ANYPROVIDER, MUTANT_STATEREFOFF, MUTANT_CAPVALUEOFF, MUTANT_HANDLEOFF, MUTANT_DENYATOFF.
+// MUTANT_ENDANY, MUTANT_ANYPROVIDER, MUTANT_STATEREFOFF, MUTANT_CAPVALUEOFF, MUTANT_HANDLEOFF, MUTANT_DENYATOFF, MUTANT_MARKERANY (S68).
 #ifndef STIGI_CAPABILITIES
 #define STIGI_CAPABILITIES
 #include "flow.dl"
@@ -85,6 +85,14 @@ cleared(a, "capability-value") :- capabilityValueUse(a, _, "Row").
 cleared(h, "handle-placement") :- handleSite(h, _).
 #else
 cleared(h, "handle-placement") :- handleSite(h, "Top").
+#endif
+
+// ruling S68: a marker is a capability with no operations; having an operation is the clearing fact (fail closed:
+// a handle with no handleTarget row stays owed)
+#ifdef MUTANT_MARKERANY
+cleared(h, "handle-on-marker") :- handleTarget(h, _).
+#else
+cleared(h, "handle-on-marker") :- handleTarget(h, k), capabilityOperation(k, _).
 #endif
 
 // the denial atom at(c, S) holds at the points where c is in state S

@@ -21,7 +21,8 @@ trap 'rm -rf "$T"' EXIT
 mcpp -e utf8 -W0 $defs "$file" > "$T/pp.dl" 2> "$T/mcpp.err" || { echo "Error: mcpp failed: $(head -1 "$T/mcpp.err")"; exit 1; }
 if [ -n "${TUPU_SHUFFLE:-}" ]; then
   here=$(dirname "$0")
-  sh "$here/shuffle.sh" "$TUPU_SHUFFLE" < "$T/pp.dl" > "$T/pp2.dl" && mv "$T/pp2.dl" "$T/pp.dl"
+  timeout 60 sh "$here/shuffle.sh" "$TUPU_SHUFFLE" < "$T/pp.dl" > "$T/pp2.dl" || { echo "Error: SHUFFLE-TIMEOUT"; exit 1; }
+  mv "$T/pp2.dl" "$T/pp.dl"
   mkdir -p "$T/sf"
   for f in "$facts"/*.facts; do [ -f "$f" ] && sh "$here/shuffle.sh" "$TUPU_SHUFFLE" -f "$f" > "$T/sf/$(basename "$f")"; done
   facts=$T/sf

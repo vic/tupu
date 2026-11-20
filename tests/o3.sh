@@ -1,21 +1,30 @@
 #!/bin/sh
-# O3: the D0 suite. run.sh of the snapshot runs unchanged with the shim in place of souffle; every family's lines
-# are diffed with the lines of tests/d0/cases/expected.txt. The refuse family is O2 (tests/o2.sh).
-# usage: BIN=build/tupu sh tests/o3.sh [family...]
+# O3 (S90 6): the D0 suite. The stream of run.sh (every family in the order of gate.sh, arith in the four RANGE slices of S88,
+# each call under timeout 60) through tests/souffle-shim.sh, checked like cases/check.sh: the lines of expected-exact.txt are
+# compared in their own file, every other line against expected.txt. The refuse family is O2 (tests/o2.sh).
+# Prints nothing but the summary line when the diff is empty. usage: BIN=build/tupu sh tests/o3.sh
 set -u
 BIN=${BIN:?BIN is not set}
+REAL_PATH=$PATH; export REAL_PATH
 ROOT=$(pwd)
+PATH=$ROOT/tests/bin:$PATH; export PATH
 W=$(mktemp -d "${TMPDIR:-/tmp}/o3.XXXXXX"); trap 'rm -rf "$W"' EXIT
 export TUPU=$ROOT/$BIN SOUFFLE=$ROOT/tests/souffle-shim.sh
-fams=${*:-bounds memory arith contracts flow capabilities names tests types stack corpus}
-rc=0
-cd tests/d0/cases || exit 2
-for f in $fams; do
-  timeout 280 sh run.sh "$f" 2> "$W"/err | cut -c1-230 > "$W"/out
-  labels=$(awk '{print $1}' "$W"/out | sort -u | paste -sd'|')
-  grep -E "^($labels) " expected.txt > "$W"/exp
-  nout=$(wc -l < "$W"/out); nexp=$(wc -l < "$W"/exp)
-  if diff "$W"/out "$W"/exp > "$W"/diff; then echo "O3 $f lines=$nout expected=$nexp diff=empty";
-  else echo "O3 $f lines=$nout expected=$nexp diff=$(grep -c '^<' "$W"/diff) lines differ"; rc=1; head -${DIFFLINES:-6} "$W"/diff | cut -c1-260; fi
+D=$ROOT/tests/d0/cases
+start=$(date +%s)
+: > "$W/stream"
+one() { # family [range]: a run that fails or hits the 60 s cap is named, never waited for
+  RANGE=${2:-} nice -n 10 timeout 60 sh "$D/run.sh" "$1" 2> /dev/null | cut -c1-230 >> "$W/stream"
+  rc=$?; [ $rc = 0 ] || echo "O3 run.sh $1 ${2:+RANGE=$2 }exit $rc"
+}
+for fam in bounds memory arith contracts flow capabilities names tests types stack corpus; do
+  if [ "$fam" = arith ]; then for r in 1-20 21-40 41-60 61-77; do ( cd "$D" && one arith "$r" ); done; else ( cd "$D" && one "$fam" ); fi
 done
-exit $rc
+grep -v '^#' "$D/expected-exact.txt" > "$W/exact"
+grep -v '^refuse ' "$D/expected.txt" > "$W/exp"
+grep -vxFf "$W/exact" "$W/stream" > "$W/a"
+grep -xFf "$W/exact" "$W/stream" > "$W/b"
+diff "$W/a" "$W/exp" > "$W/d1"; diff "$W/b" "$W/exact" > "$W/d2"
+cat "$W/d1" "$W/d2" | head -${DIFFLINES:-12} | cut -c1-260
+echo "O3 stream=$(wc -l < "$W/stream") expected=$(wc -l < "$W/exp") exact=$(wc -l < "$W/exact") difflines=$(cat "$W/d1" "$W/d2" | wc -l) wall=$(( $(date +%s) - start ))s"
+[ ! -s "$W/d1" ] && [ ! -s "$W/d2" ]

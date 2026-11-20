@@ -1,0 +1,4 @@
+# Lines whose verdict depends on the 64-bit wrap of Souffle (ruling S85). Run by Souffle only: gate.sh and check.sh diff them
+# with the stream of the gate. An exact engine gives the line of expected-exact.txt instead.
+# MUTANT_PLAINADD (bounds.dl:123-125) adds with the plain `+` of Souffle; the verdict is empty here only because Souffle wraps at 64 bits.
+arith addI64max -MMUTANT_PLAINADD: 

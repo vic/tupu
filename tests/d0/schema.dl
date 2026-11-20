@@ -59,12 +59,13 @@ reject(s, c) :- owes(s, c), !cleared(s, c).
 .decl phi(p: Value, a: Value, sa: Scope, b: Value, sb: Scope, j: Scope)   // p merges a (edge scope sa) and b (sb) at j
 .decl baseBelow(x: Value, y: Value, s: Scope)           // credit: x < y from scope s on
 .decl baseLeq(x: Value, y: Value, s: Scope)             // credit: x <= y from scope s on
-.decl indexRead(o: Operation, i: Value, n: Value, s: Scope)          // element i of an object of length n
+.decl indexRead(o: Operation, i: Value, n: Value, s: Scope)          // element i of an object of length n is read
+.decl indexWrite(o: Operation, i: Value, n: Value, s: Scope)         // element i of an object of length n is written (ruling S67)
 .decl leqOwed(o: Operation, x: Value, y: Value, s: Scope, c: Code)   // a stated lessOrEqual fact to prove
 .decl belowOwed(o: Operation, x: Value, y: Value, s: Scope, c: Code)  // a stated below fact to prove
 .input value, scope, parent, lit, u64, valueType, typeRange, typeWidth
 .input addOp, subtractOp, multiplyOp, quotientOp, remainderOp, shiftOp, andOp
-.input phi, baseBelow, baseLeq, indexRead, leqOwed, belowOwed
+.input phi, baseBelow, baseLeq, indexRead, indexWrite, leqOwed, belowOwed
 .decl instanceOf(i: Instance, u: Unit)                 // producer: the type checker (the one producer of unit ownership)
 .decl operationOf(o: Operation, i: Instance)            // the operation stands in this instance; exactly one row per operation (S26)
 .decl statesFact(u: Unit, form: FactForm)               // the unit's own text holds a fact group on a safety relation (S21)
@@ -78,10 +79,13 @@ reject(s, c) :- owes(s, c), !cleared(s, c).
 .decl heap(r: Region)
 .decl use(p: Point, v: Value)                           // p reads v through some alias
 .decl move(p: Point, v: Value, c: Value)                // v moves into container c at p
-.input next, exit, alloc, arena, heap, use, move
+.decl consume(p: Point, v: Value)                          // the Array.tryGrow call at p takes the object v by move and ends it (ruling S70)
+.decl regain(p: Point, v: Value)                           // p is the first point of the GrowFailed arm: v has a local owner again from p (ruling S70)
+.input next, exit, alloc, arena, heap, use, move, consume, regain
 
 // ---- what each operation owes (this block stands for the extractor's contract) ----
 owes(o, "index-unproved") :- indexRead(o, _, _, _).
+owes(o, "index-unproved") :- indexWrite(o, _, _, _).    // ruling S67: a write owes the index as a read does
 owes(o, "overflow-unproved") :- addOp(o, _, _, _, _).
 owes(o, "overflow-unproved") :- subtractOp(o, _, _, _, _).
 owes(o, "overflow-unproved") :- multiplyOp(o, _, _, _, _).
@@ -148,8 +152,10 @@ owes(o, "branch-decided") :- matchArm(o, _, _).
 .decl stateRef(a: Atom, k: Unit, s: State)                             // a state name written for the capability k
 .decl capabilityValueUse(a: Atom, v: Value, role: UseRole)             // a capability value is used
 .decl handleSite(h: Atom, place: Placement)                            // a handle statement
+.decl handleTarget(h: Atom, k: Unit)                                   // the handle statement h installs a handler of the capability unit k (ruling S68)
+.decl capabilityOperation(k: Unit, op: Atom)                           // the capability unit k declares the operation op (ruling S68)
 .decl denyState(d: Atom, k: Atom, c: Value, s: State)                  // atom k of the denial d is at(c, s)
-.input capabilityOf, startState, stopState, stateOf, entryState, exitState, handleRange, join, loopHead, needsCapability, provider, stateRef, capabilityValueUse, handleSite, denyState
+.input capabilityOf, startState, stopState, stateOf, entryState, exitState, handleRange, join, loopHead, needsCapability, provider, stateRef, capabilityValueUse, handleSite, handleTarget, capabilityOperation, denyState
 owes(o, "op-not-allowed") :- operationCall(o, _, op, _), entryState(op, _).
 owes(c, "capability-not-ended") :- handleRange(c, _, _), capabilityOf(c, _).
 owes(j, "branch-states") :- join(j).
@@ -158,6 +164,7 @@ owes(o, "unhandled-effect") :- needsCapability(o, _).
 owes(a, "unknown-state") :- stateRef(a, _, _).
 owes(a, "capability-value") :- capabilityValueUse(a, _, _).
 owes(h, "handle-placement") :- handleSite(h, _).
+owes(h, "handle-on-marker") :- handleSite(h, _).    // ruling S68: a handle of a marker (no operations) stays owed
 
 // ---- memory beyond liveness: summaries, escape, aliases, writes, frees (producer: the fact extractor) ----
 .decl callOf(o: Operation, callee: Instance, kind: CallKind)           // the operation calls the instance
@@ -222,6 +229,7 @@ owes(a, "handler-state-escape") :- stateAddress(a).
 .decl linearForm(t: Atom)
 .decl typeDecl(ty: TypeName)
 .decl inlineField(ty: TypeName, inner: TypeName)
+.decl elementField(ty: TypeName, elem: TypeName)                          // a field of ty has type Array[elem](n) or Cell[elem] (ruling S69)
 .decl evaluation(e: Expression, site: symbol, outcome: symbol)        // site: TypeArgument Value; outcome: Done OutOfFuel ReachesExtern
 .decl matchOver(m: Atom)                                               // a match over an enum
 .decl enumCase(m: Atom, k: Atom)
@@ -250,7 +258,7 @@ owes(a, "handler-state-escape") :- stateAddress(a).
 .decl rootInstance(i: Instance)
 .decl stackBudget(bytes: number)
 .input unit, unitName, binderName, reference, resolves, visibleFrom, public, mainUnit, sameNamespace, edge, root, imageMode, kernelOnly, ruleHeadKernel, underStigi, externRef, handlerUnit
-.input typeOf, expects, needsInference, inferredType, arityUse, lengthTerm, linearForm, typeDecl, inlineField, evaluation, matchOver, enumCase, armCase, wildcardArm, patternDepth, assignTo, isVar, handlerImpl, sigOf, externDecl, externCarriesFacts
+.input typeOf, expects, needsInference, inferredType, arityUse, lengthTerm, linearForm, typeDecl, inlineField, elementField, evaluation, matchOver, enumCase, armCase, wildcardArm, patternDepth, assignTo, isVar, handlerImpl, sigOf, externDecl, externCarriesFacts
 .input testGot, testWant, emittedRun, emittedGot, testRow, negExpect, negRejects, clearsRule, kernelRule, ruleReads, userRelation, frameBytes, depthBound, rootInstance, stackBudget
 owes(r, "unresolved-name") :- reference(r, _).
 owes(r, "private-reference") :- resolves(r, _).

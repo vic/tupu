@@ -9,7 +9,12 @@ mk axTransBL; types; V i U8; V m U8; V n U8; f baseBelow 'i m R'; f baseLeq 'm n
 mk axTransLB; types; V i U8; V m U8; V n U8; f baseLeq 'i m R'; f baseBelow 'm n R'; f indexRead 'rd i n R'
 mk axTransLL; types; V a U8; V b U8; V c U8; f baseLeq 'a b R' 'b c R'; f leqOwed 'e a c R exit-unproved'
 mk axSucc; types; V x U8; V b U8; V a U8; V k1 U8 1; f baseBelow 'x b R'; f addOp 'ad a x k1 R'; f leqOwed 'e a b R exit-unproved'
-for x in axRefl axU64Zero axLitLeq axLitBelow axBelowLeq axTransBL axTransLB axTransLL axSucc; do bx $x; done
+# ruling S67: an element write owes index-unproved as a read does
+mk wrOk; types; V i U8 2; V n U8 5; f indexWrite 'wr i n R'
+mk wrBad; types; V i U8; V n U8; f indexWrite 'wr i n R'
+# ruling S83: one operation with a proved read row and an unproved write row is rejected
+mk mixedAccess; types; V i U8 2; V n U8 5; V j U8; f indexRead 'rw i n R'; f indexWrite 'rw j n R'
+for x in axRefl axU64Zero axLitLeq axLitBelow axBelowLeq axTransBL axTransLB axTransLL axSucc wrOk wrBad mixedAccess; do bx $x; done
 bx axRefl -MMUTANT_AX_REFL
 bx axU64Zero -MMUTANT_AX_U64ZERO
 bx axLitLeq -MMUTANT_AX_LITLEQ
@@ -19,3 +24,5 @@ bx axTransBL -MMUTANT_AX_TRANSBL
 bx axTransLB -MMUTANT_AX_TRANSLB
 bx axTransLL -MMUTANT_AX_TRANSLL
 bx axSucc -MMUTANT_AX_SUCC
+bx wrBad -MMUTANT_INDEXWRITEOFF
+bx mixedAccess -MMUTANT_ANYACCESS

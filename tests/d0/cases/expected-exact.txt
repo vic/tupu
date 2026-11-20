@@ -1,0 +1,3 @@
+# Lines whose verdict an exact (128-bit) engine gives where Souffle gives another one (ruling S85). Run by exact engines: tupu now,
+# the seed later. Souffle does not run this file; expected-souffle64.txt holds the Souffle lines for the same cases.
+arith addI64max -MMUTANT_PLAINADD: addO/overflow-unproved 

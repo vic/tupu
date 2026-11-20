@@ -4,7 +4,7 @@
 // exhaustiveness of a match over a closed enum (each case once).
 // Mutants (cases/types.cases): MUTANT_MISMATCHOFF, MUTANT_INFEROFF, MUTANT_ARITYOFF, MUTANT_LINEAROFF, MUTANT_RECDIRECT,
 // MUTANT_FUELOFF, MUTANT_EXTERNEVALOFF, MUTANT_MISSINGCASEOFF, MUTANT_DUPCASEOFF, MUTANT_WILDOFF, MUTANT_NESTOFF,
-// MUTANT_ASSIGNOFF, MUTANT_SIGOFF, MUTANT_FORGEOFF.
+// MUTANT_ASSIGNOFF, MUTANT_SIGOFF, MUTANT_FORGEOFF, MUTANT_NOELEMENT (S69).
 #ifndef STIGI_TYPES
 #define STIGI_TYPES
 #include "schema.dl"
@@ -34,13 +34,17 @@ cleared(t, "length-not-linear") :- lengthTerm(t).
 #else
 cleared(t, "length-not-linear") :- lengthTerm(t), linearForm(t).
 #endif
-// a type cannot contain itself, directly or through other types, by inline fields
-.decl inlineReach(a: TypeName, b: TypeName)
-inlineReach(a, b) :- inlineField(a, b).
-#ifndef MUTANT_RECDIRECT
-inlineReach(a, c) :- inlineReach(a, b), inlineField(b, c).
+// a type cannot contain itself, directly or through other types, by inline fields or by the element type of an
+// Array or a Cell field (ruling S43, S69)
+.decl typeReach(a: TypeName, b: TypeName)
+typeReach(a, b) :- inlineField(a, b).
+#ifndef MUTANT_NOELEMENT
+typeReach(a, b) :- elementField(a, b).
 #endif
-cleared(ty, "recursive-type") :- typeDecl(ty), !inlineReach(ty, ty).
+#ifndef MUTANT_RECDIRECT
+typeReach(a, c) :- typeReach(a, b), typeReach(b, c).
+#endif
+cleared(ty, "recursive-type") :- typeDecl(ty), !typeReach(ty, ty).
 // compile-time evaluation: inside its fuel, and without a body-less extern
 #ifdef MUTANT_FUELOFF
 cleared(e, "type-fuel") :- evaluation(e, "TypeArgument", _).
