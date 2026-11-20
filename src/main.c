@@ -1,106 +1,104 @@
-/* tupu: standalone Datalog engine. C0 skeleton: argument handling and the typed result path only.
-   Every outcome is a value of Result; main maps it to an exit status and a message (ruling S79). */
+/* tupu: standalone Datalog engine. Every outcome is a Status plus an Err; main maps it to the exit status (S79):
+   0 complete, 1 rejected, 2 usage. Nothing is written to stdout when the run is rejected. */
+#include "ast.h"
+#include "engine.h"
+#include "out.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-typedef enum { STATUS_COMPLETE, STATUS_REJECTED } Status;
-
-typedef enum {
-  CODE_USAGE,
-  CODE_PARSE,
-  CODE_TYPE_MISMATCH,
-  CODE_UNRESOLVED_NAME,
-  CODE_RELATION_ARITY,
-  CODE_RULE_UNSAFE,
-  CODE_NEGATION_CYCLE,
-  CODE_FACTS_MISSING_FILE,
-  CODE_FACTS_MALFORMED,
-  CODE_IO_FAILED,
-  CODE_DATALOG_ARITH,
-  CODE_DATALOG_BUDGET,
-  CODE_ENGINE_OUT_OF_MEMORY,
-  CODE_ENGINE_NOT_BUILT /* C0 only: removed when the engine lands (step 3) */
-} Code;
-
-typedef struct {
-  Status status;
-  Code code; /* meaningful only when status == STATUS_REJECTED */
-  const char *file; /* NULL: a code of the whole run, printed as "-" */
-  long line;
-  const char *text;
-} Result;
 
 typedef struct {
   const char *facts_dir;
   const char *out_target;
   const char *program;
-  long budget_rows;
+  const char *prov_dir;
+  uint64_t budget;
 } Args;
 
-static const char *code_name(Code c) {
-  switch (c) {
-  case CODE_USAGE: return "usage";
-  case CODE_PARSE: return "parse";
-  case CODE_TYPE_MISMATCH: return "type-mismatch";
-  case CODE_UNRESOLVED_NAME: return "unresolved-name";
-  case CODE_RELATION_ARITY: return "relation-arity";
-  case CODE_RULE_UNSAFE: return "rule-unsafe";
-  case CODE_NEGATION_CYCLE: return "negation-cycle";
-  case CODE_FACTS_MISSING_FILE: return "facts-missing-file";
-  case CODE_FACTS_MALFORMED: return "facts-malformed";
-  case CODE_IO_FAILED: return "io-failed";
-  case CODE_DATALOG_ARITH: return "datalog-arith";
-  case CODE_DATALOG_BUDGET: return "datalog-budget";
-  case CODE_ENGINE_OUT_OF_MEMORY: return "engine-out-of-memory";
-  case CODE_ENGINE_NOT_BUILT: return "engine-not-built";
-  }
-  return "usage"; /* unreachable: the switch covers the closed enum */
-}
-
-static Result rejected(Code c, const char *text) {
-  Result r = { STATUS_REJECTED, c, NULL, 0, text };
-  return r;
-}
-
-static Result complete(void) {
-  Result r = { STATUS_COMPLETE, CODE_USAGE, NULL, 0, "" };
-  return r;
-}
-
-static Result parse_args(int argc, char **argv, Args *a) {
-  a->facts_dir = NULL;
-  a->out_target = NULL;
-  a->program = NULL;
-  a->budget_rows = 1000000; /* the floor of I4 */
+static Status parse_args(int argc, char **argv, Args *a, Err *e) {
+  const char *usage = "tupu -F DIR -D (-|DIR) [-b ROWS] [-P DIR] PROGRAM";
+  memset(a, 0, sizeof *a);
+  a->budget = 1000000; /* the floor of I4 */
   for (int i = 1; i < argc; i++) {
-    if (strcmp(argv[i], "-F") == 0 && i + 1 < argc) a->facts_dir = argv[++i];
-    else if (strcmp(argv[i], "-D") == 0 && i + 1 < argc) a->out_target = argv[++i];
+    if (strcmp(argv[i], "-F") == 0 && i + 1 < argc && a->facts_dir == NULL) a->facts_dir = argv[++i];
+    else if (strcmp(argv[i], "-D") == 0 && i + 1 < argc && a->out_target == NULL) a->out_target = argv[++i];
+    else if (strcmp(argv[i], "-P") == 0 && i + 1 < argc && a->prov_dir == NULL) a->prov_dir = argv[++i];
     else if (strcmp(argv[i], "-b") == 0 && i + 1 < argc) {
       char *end;
-      long v = strtol(argv[++i], &end, 10);
-      if (*end != '\0' || end == argv[i] || v < 0) return rejected(CODE_USAGE, "-b needs a row count");
-      a->budget_rows = v;
+      unsigned long long v = strtoull(argv[++i], &end, 10);
+      if (*end != '\0' || end == argv[i] || argv[i][0] == '-') return err_set(e, CODE_USAGE, NULL, 0, "-b needs a row count");
+      a->budget = v;
     } else if (a->program == NULL && (argv[i][0] != '-' || strcmp(argv[i], "-") == 0)) a->program = argv[i];
-    else return rejected(CODE_USAGE, "tupu -F DIR -D (-|DIR) [-b ROWS] PROGRAM");
+    else return err_set(e, CODE_USAGE, NULL, 0, "%s", usage);
   }
-  if (a->facts_dir == NULL || a->out_target == NULL || a->program == NULL)
-    return rejected(CODE_USAGE, "tupu -F DIR -D (-|DIR) [-b ROWS] PROGRAM");
-  return complete();
+  if (a->facts_dir == NULL || a->out_target == NULL || a->program == NULL) return err_set(e, CODE_USAGE, NULL, 0, "%s", usage);
+  return STATUS_OK;
 }
 
-static Result run(const Args *a) {
-  (void)a;
-  return rejected(CODE_ENGINE_NOT_BUILT, "the engine lands in C1");
+static Status read_program(const char *path, char **text, size_t *len, Err *e) {
+  FILE *f = strcmp(path, "-") == 0 ? stdin : fopen(path, "rb");
+  if (f == NULL) return err_set(e, CODE_IO_FAILED, NULL, 0, "cannot open %s", path);
+  size_t cap = 1 << 16, n = 0;
+  char *b = malloc(cap);
+  if (b == NULL) return err_oom(e);
+  for (;;) {
+    if (n == cap) {
+      char *nb = realloc(b, cap * 2);
+      if (nb == NULL) {
+        free(b);
+        return err_oom(e);
+      }
+      b = nb;
+      cap *= 2;
+    }
+    size_t got = fread(b + n, 1, cap - n, f);
+    n += got;
+    if (got == 0) break;
+  }
+  bool bad = ferror(f) != 0;
+  if (f != stdin) (void)fclose(f);
+  if (bad) {
+    free(b);
+    return err_set(e, CODE_IO_FAILED, NULL, 0, "read failed on %s", path);
+  }
+  *text = b;
+  *len = n;
+  return STATUS_OK;
+}
+
+static Status run(const Args *a, Err *e) {
+  char *text = NULL;
+  size_t len = 0;
+  if (read_program(a->program, &text, &len, e) != STATUS_OK) return STATUS_ERR;
+  Program prog;
+  program_init(&prog);
+  Engine eng;
+  bool open = false;
+  Status st = parse_program(&prog, text, len, strcmp(a->program, "-") == 0 ? "<stdin>" : a->program, e);
+  if (st == STATUS_OK) st = check_program(&prog, e);
+  if (st == STATUS_OK) {
+    st = engine_open(&eng, &prog, a->facts_dir, a->budget, a->prov_dir != NULL, e);
+    open = true;
+  }
+  if (st == STATUS_OK) st = engine_eval(&eng, e);
+  if (st == STATUS_OK && a->prov_dir != NULL) st = engine_replay(&eng, e);
+  if (st == STATUS_OK) st = out_write(&eng, a->out_target, e);
+  if (st == STATUS_OK && a->prov_dir != NULL) st = out_write_prov(&eng, a->prov_dir, e);
+  if (open) engine_close(&eng);
+  program_free(&prog);
+  free(text);
+  return st;
 }
 
 int main(int argc, char **argv) {
   Args a;
-  Result r = parse_args(argc, argv, &a);
-  if (r.status == STATUS_COMPLETE) r = run(&a);
-  if (r.status == STATUS_REJECTED) {
-    fprintf(stderr, "rejected %s %s:%ld: %s\n", code_name(r.code), r.file ? r.file : "-", r.line, r.text);
-    return r.code == CODE_USAGE ? 2 : 1;
+  Err e;
+  Status st = parse_args(argc, argv, &a, &e);
+  if (st == STATUS_OK) st = run(&a, &e);
+  if (st == STATUS_ERR) {
+    if (e.file == NULL) fprintf(stderr, "rejected %s -: %s\n", code_name(e.code), e.text);
+    else fprintf(stderr, "rejected %s %s:%ld: %s\n", code_name(e.code), e.file, e.line, e.text);
+    return e.code == CODE_USAGE ? 2 : 1;
   }
   return 0;
 }

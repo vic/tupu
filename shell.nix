@@ -1,4 +1,4 @@
 { pkgs ? import <nixpkgs> { } }:
 pkgs.mkShell {
-  packages = with pkgs; [ gcc clang gnumake mcpp valgrind linuxPackages.perf time ];
+  packages = with pkgs; [ gcc clang just mcpp valgrind perf time ];
 }
