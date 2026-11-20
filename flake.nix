@@ -9,7 +9,12 @@
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
-      packages = forAll (pkgs: {
+      packages = forAll (pkgs: rec {
+        souffle-compat = pkgs.writeShellApplication {
+          name = "souffle";
+          runtimeInputs = [ pkgs.mcpp default pkgs.coreutils pkgs.gawk pkgs.gnugrep ];
+          text = builtins.readFile ./souffle-compat.sh;
+        };
         default = pkgs.stdenv.mkDerivation {
           pname = "tupu";
           version = "0.0.0";

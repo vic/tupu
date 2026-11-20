@@ -9,7 +9,7 @@ REAL_PATH=$PATH; export REAL_PATH
 ROOT=$(pwd)
 PATH=$ROOT/tests/bin:$PATH; export PATH
 W=$(mktemp -d "${TMPDIR:-/tmp}/o3.XXXXXX"); trap 'rm -rf "$W"' EXIT
-export TUPU=$ROOT/$BIN SOUFFLE=$ROOT/tests/souffle-shim.sh
+export TUPU=$ROOT/$BIN; SOUFFLE=${SOUFFLE:-$ROOT/tests/souffle-shim.sh}; export SOUFFLE
 D=$ROOT/tests/d0/cases
 start=$(date +%s)
 : > "$W/stream"
