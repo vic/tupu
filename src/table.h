@@ -43,9 +43,10 @@ static inline I128 tcell(const Table *t, int c, uint32_t row) {
 Status table_init(Table *t, const Relation *r, bool want_prov, Err *e);
 void table_free(Table *t);
 /* add a row (dedup): *added tells whether it was new. A table past 2^32-2 rows is datalog-budget. */
-Status table_add(Table *t, const I128 *vals, Origin org, uint32_t ref, uint32_t round, const uint32_t *body, int nbody,
+Status table_add(Table *t, uint64_t h, const I128 *vals, Origin org, uint32_t ref, uint32_t round, const uint32_t *body, int nbody,
                  bool *added, Err *e);
 bool table_contains(const Table *t, const I128 *vals);
+bool table_contains_h(const Table *t, uint64_t h, const I128 *vals); /* the same test with the hash given */
 uint64_t table_hash_row(const Table *t, const I128 *vals); /* the hash of the dedup set (E5) over all columns */
 
 /* hash of the cells at `cols` (ascending) taken from vals_by_col[column] */

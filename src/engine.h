@@ -8,17 +8,11 @@ typedef struct {
 } RelRange;
 
 typedef struct {
-  uint32_t rel, rule;
-  size_t voff, boff;
-} Entry;
-
-typedef struct {
-  Entry *e;
   size_t n, cap;
-  I128 *vals;
-  size_t nvals, vcap;
-  uint32_t *bodies;
-  size_t nbodies, bcap;
+  uint64_t *hash;  /* per row: the hash of its cells (F3) */
+  uint8_t *cells;  /* per row: rowbytes bytes, each cell at its column width (F2) */
+  size_t rowbytes;
+  uint32_t *bodies; /* per row: natoms body row ids, only with -P (E8) */
   uint32_t *hs; /* F1: open-addressing set of the rows this job buffered: entry index per slot, one used byte per slot, load factor 1/2 */
   uint8_t *hu;
   size_t hcap;

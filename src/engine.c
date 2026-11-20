@@ -53,26 +53,61 @@ static Status ex_eval(Engine *x, const Expr *e, I128 *out) {
   return STATUS_OK;
 }
 
-/* F1: is this row already buffered by the running job? A job has one rule, so one head relation: the rows compare cell by cell. */
-static bool jobset_has(const Engine *x, const Table *ht, const I128 *vals, int nv, size_t *slot_out) {
-  const Buf *b = &x->buf;
-  if (b->hcap == 0) {
-    *slot_out = 0;
-    return false;
+/* ---- the job buffer (S101 F1, F2, F3): rows of ONE rule, so one head relation and one row width. A row is its hash (u64), its cells at
+   their column width (symbol u32, number I128) and, with -P, its body row ids. The set `hs`/`hu` finds a row already buffered by this
+   job: slot = hash & (hcap - 1), one used byte per slot, load factor at most 1/2. ---- */
+static size_t cell_off(const Table *t, int c) {
+  size_t o = 0;
+  for (int i = 0; i < c; i++) o += t->kind[i] == BASE_SYMBOL ? sizeof(uint32_t) : sizeof(I128);
+  return o;
+}
+
+static void pack_row(const Table *t, uint8_t *dst, const I128 *vals) {
+  for (int c = 0; c < t->ncols; c++) {
+    if (t->kind[c] == BASE_SYMBOL) {
+      uint32_t v = (uint32_t)vals[c];
+      memcpy(dst, &v, sizeof v);
+      dst += sizeof v;
+    } else {
+      memcpy(dst, &vals[c], sizeof(I128));
+      dst += sizeof(I128);
+    }
   }
-  size_t i = table_hash_row(ht, vals) & (b->hcap - 1);
+}
+
+static void unpack_row(const Table *t, const uint8_t *src, I128 *vals) {
+  for (int c = 0; c < t->ncols; c++) {
+    if (t->kind[c] == BASE_SYMBOL) {
+      uint32_t v;
+      memcpy(&v, src, sizeof v);
+      vals[c] = (I128)v;
+      src += sizeof v;
+    } else {
+      memcpy(&vals[c], src, sizeof(I128));
+      src += sizeof(I128);
+    }
+  }
+}
+
+static bool jobset_has(const Engine *x, const Table *ht, uint64_t h, const I128 *vals) {
+  const Buf *b = &x->buf;
+  if (b->hcap == 0) return false;
+  size_t i = h & (b->hcap - 1);
+  I128 *o = x->scratch;
   while (b->hu[i]) {
-    const I128 *o = b->vals + b->e[b->hs[i]].voff;
-    bool eq = true;
-    for (int c = 0; c < nv && eq; c++) eq = o[c] == vals[c];
-    if (eq) return true;
+    uint32_t k = b->hs[i];
+    if (b->hash[k] == h) {
+      unpack_row(ht, b->cells + (size_t)k * b->rowbytes, o);
+      bool eq = true;
+      for (int c = 0; c < ht->ncols && eq; c++) eq = o[c] == vals[c];
+      if (eq) return true;
+    }
     i = (i + 1) & (b->hcap - 1);
   }
-  *slot_out = i;
   return false;
 }
 
-static Status jobset_add(Engine *x, const Table *ht, uint32_t entry, int nv) {
+static Status jobset_insert(Engine *x, uint32_t entry) {
   Buf *b = &x->buf;
   if (b->hcap == 0 || (size_t)(entry + 1) * 2 > b->hcap) {
     size_t nc = b->hcap == 0 ? 1024 : b->hcap * 2;
@@ -83,8 +118,8 @@ static Status jobset_add(Engine *x, const Table *ht, uint32_t entry, int nv) {
       free(nu);
       return err_oom(x->err);
     }
-    for (uint32_t k = 0; k < entry; k++) {
-      size_t j = table_hash_row(ht, b->vals + b->e[k].voff) & (nc - 1);
+    for (uint32_t k = 0; k < entry; k++) { /* the stored hashes: no row is hashed again */
+      size_t j = b->hash[k] & (nc - 1);
       while (nu[j]) j = (j + 1) & (nc - 1);
       nu[j] = 1;
       ns[j] = k;
@@ -95,52 +130,39 @@ static Status jobset_add(Engine *x, const Table *ht, uint32_t entry, int nv) {
     b->hu = nu;
     b->hcap = nc;
   }
-  size_t j = table_hash_row(ht, b->vals + b->e[entry].voff) & (b->hcap - 1);
+  size_t j = b->hash[entry] & (b->hcap - 1);
   while (b->hu[j]) j = (j + 1) & (b->hcap - 1);
   b->hu[j] = 1;
   b->hs[j] = entry;
-  (void)nv;
   return STATUS_OK;
 }
 
-static Status buf_push(Engine *x, uint32_t rel, uint32_t rule, const I128 *vals, int nv, const uint32_t *body, int nb) {
+static Status buf_push(Engine *x, const Table *ht, uint64_t h, const I128 *vals, const uint32_t *body, int nb) {
   Buf *b = &x->buf;
   if (b->n == b->cap) {
     size_t nc = b->cap == 0 ? 1024 : b->cap * 2;
-    Entry *ne = realloc(b->e, nc * sizeof *ne);
-    if (ne == NULL) return err_oom(x->err);
-    b->e = ne;
+    uint64_t *nh = realloc(b->hash, nc * sizeof *nh);
+    if (nh == NULL) return err_oom(x->err);
+    b->hash = nh;
+    uint8_t *ncl = realloc(b->cells, nc * b->rowbytes + 1);
+    if (ncl == NULL) return err_oom(x->err);
+    b->cells = ncl;
+    if (nb > 0) {
+      uint32_t *nbp = realloc(b->bodies, nc * (size_t)nb * sizeof *nbp);
+      if (nbp == NULL) return err_oom(x->err);
+      b->bodies = nbp;
+    }
     b->cap = nc;
   }
-  if (b->nvals + (size_t)nv > b->vcap) {
-    size_t nc = b->vcap == 0 ? 4096 : b->vcap * 2;
-    while (nc < b->nvals + (size_t)nv) nc *= 2;
-    I128 *nvp = realloc(b->vals, nc * sizeof *nvp);
-    if (nvp == NULL) return err_oom(x->err);
-    b->vals = nvp;
-    b->vcap = nc;
-  }
-  if (b->nbodies + (size_t)nb > b->bcap) {
-    size_t nc = b->bcap == 0 ? 4096 : b->bcap * 2;
-    while (nc < b->nbodies + (size_t)nb) nc *= 2;
-    uint32_t *nbp = realloc(b->bodies, nc * sizeof *nbp);
-    if (nbp == NULL) return err_oom(x->err);
-    b->bodies = nbp;
-    b->bcap = nc;
-  }
-  Entry *e = &b->e[b->n++];
-  e->rel = rel;
-  e->rule = rule;
-  e->voff = b->nvals;
-  e->boff = b->nbodies;
-  memcpy(b->vals + b->nvals, vals, (size_t)nv * sizeof *vals);
-  b->nvals += (size_t)nv;
-  if (nb > 0) memcpy(b->bodies + b->nbodies, body, (size_t)nb * sizeof *body);
+  uint32_t k = (uint32_t)b->n;
+  b->hash[k] = h;
+  pack_row(ht, b->cells + (size_t)k * b->rowbytes, vals);
+  if (nb > 0) memcpy(b->bodies + (size_t)k * (size_t)nb, body, (size_t)nb * sizeof *body);
 #ifdef MUTANT_PROVBODY
-  if (nb > 0) b->bodies[b->nbodies] += 1;
+  if (nb > 0) b->bodies[(size_t)k * (size_t)nb] += 1;
 #endif
-  b->nbodies += (size_t)nb;
-  return STATUS_OK;
+  b->n++;
+  return jobset_insert(x, k);
 }
 
 static Status emit_head(Engine *x) {
@@ -159,13 +181,11 @@ static Status emit_head(Engine *x) {
   }
   x->derivations++;
   const Table *ht = &x->tabs[r->head.rel];
-  if (table_contains(ht, hv)) return STATUS_OK;
-  size_t dummy;
-  if (jobset_has(x, ht, hv, r->head.nargs, &dummy)) return STATUS_OK;
+  uint64_t h = table_hash_row(ht, hv); /* the one hash of this derivation (F3): the table test, the job set and the merge use it */
+  if (table_contains_h(ht, h, hv)) return STATUS_OK;
+  if (jobset_has(x, ht, h, hv)) return STATUS_OK;
   x->rows_derived++;
-  uint32_t entry = (uint32_t)x->buf.n;
-  if (buf_push(x, (uint32_t)r->head.rel, (uint32_t)r->index, hv, r->head.nargs, x->body, x->prov ? x->cur->natoms : 0) != STATUS_OK) return STATUS_ERR;
-  return jobset_add(x, ht, entry, r->head.nargs);
+  return buf_push(x, ht, h, hv, x->body, x->prov ? x->cur->natoms : 0);
 }
 
 static void range_of(const Engine *x, const Step *s, uint32_t *lo, uint32_t *hi) {
@@ -355,9 +375,6 @@ void engine_close(Engine *x) {
   free(x->cells);
   free(x->body);
   free(x->rr);
-  free(x->buf.e);
-  free(x->buf.vals);
-  free(x->buf.bodies);
   strata_free(&x->strata);
   memset(x, 0, sizeof *x);
 }
@@ -411,7 +428,7 @@ Status engine_open(Engine *x, Program *p, const char *facts_dir, uint64_t budget
     I128 *vals = x->cells;
     for (int c = 0; c < f->atom.nargs; c++) vals[c] = f->atom.args[c]->kind == EX_SYM ? (I128)f->atom.args[c]->sym : f->atom.args[c]->num;
     bool added;
-    if (table_add(&x->tabs[f->atom.rel], vals, ORG_FACT, (uint32_t)i, 0, NULL, 0, &added, e) != STATUS_OK) return STATUS_ERR;
+    if (table_add(&x->tabs[f->atom.rel], table_hash_row(&x->tabs[f->atom.rel], vals), vals, ORG_FACT, (uint32_t)i, 0, NULL, 0, &added, e) != STATUS_OK) return STATUS_ERR;
   }
   return sym_build_rank(&p->syms, e);
 }
@@ -463,8 +480,8 @@ static int first_atom_step(const Variant *v) {
 }
 
 static void job_free(Job *j) {
-  free(j->buf.e);
-  free(j->buf.vals);
+  free(j->buf.hash);
+  free(j->buf.cells);
   free(j->buf.bodies);
 }
 
@@ -519,6 +536,7 @@ static void run_job(Engine *w, Job *j) {
   w->chunk_hi = j->hi;
   w->err = &j->err;
   w->buf = j->buf;
+  w->buf.rowbytes = cell_off(&w->tabs[j->v->rule->head.rel], w->tabs[j->v->rule->head.rel].ncols);
   j->st = ex_run(w, &j->v->plan, 0, END_HEAD);
   j->buf = w->buf;
   free(j->buf.hs); /* F1: the job set is private to the job; the merge dedups across jobs */
@@ -613,16 +631,14 @@ static Status merge(Engine *x, JobList *jl, uint32_t round, uint64_t *new_rows) 
 #endif
   for (size_t j = 0; j < jl->n; j++) {
     Buf *b = &jl->p[j].buf;
+    const Rule *rule = jl->p[j].v->rule;
+    Table *ht = &x->tabs[rule->head.rel];
+    I128 *vals = x->cells;
+    int nb = x->prov ? jl->p[j].v->natoms : 0;
     for (size_t i = 0; i < b->n; i++) {
-      const Entry *en = &b->e[i];
-      int nb = 0;
-      if (x->prov) {
-        const Rule *rule = &x->prog->rules.p[en->rule];
-        for (int k = 0; k < rule->nlits; k++)
-          if (rule->lits[k]->kind == LIT_POS) nb++;
-      }
+      unpack_row(ht, b->cells + i * b->rowbytes, vals);
       bool added;
-      if (table_add(&x->tabs[en->rel], b->vals + en->voff, ORG_RULE, en->rule, round, b->bodies + en->boff, nb, &added, x->err) !=
+      if (table_add(ht, b->hash[i], vals, ORG_RULE, (uint32_t)rule->index, round, nb > 0 ? b->bodies + i * (size_t)nb : NULL, nb, &added, x->err) !=
           STATUS_OK)
         return STATUS_ERR;
       if (added) (*new_rows)++;

@@ -140,6 +140,16 @@ static Status table_grow(Table *t, Err *e) {
 
 uint64_t table_hash_row(const Table *t, const I128 *vals) { return hash_vals_all(t, vals); }
 
+bool table_contains_h(const Table *t, uint64_t h, const I128 *vals) {
+  if (t->dcap == 0) return false;
+  size_t i = h & (t->dcap - 1);
+  while (t->dused[i]) {
+    if (row_equals(t, t->dslot[i], vals)) return true;
+    i = (i + 1) & (t->dcap - 1);
+  }
+  return false;
+}
+
 bool table_contains(const Table *t, const I128 *vals) {
   if (t->dcap == 0) return false;
   size_t i = hash_vals_all(t, vals) & (t->dcap - 1);
@@ -150,13 +160,13 @@ bool table_contains(const Table *t, const I128 *vals) {
   return false;
 }
 
-Status table_add(Table *t, const I128 *vals, Origin org, uint32_t ref, uint32_t round, const uint32_t *body, int nbody,
+Status table_add(Table *t, uint64_t h, const I128 *vals, Origin org, uint32_t ref, uint32_t round, const uint32_t *body, int nbody,
                  bool *added, Err *e) {
   *added = false;
   if (t->dcap == 0 || (size_t)(t->count + 1) * 2 > t->dcap) {
     if (dedup_grow(t, e) != STATUS_OK) return STATUS_ERR;
   }
-  size_t i = hash_vals_all(t, vals) & (t->dcap - 1);
+  size_t i = h & (t->dcap - 1);
   while (t->dused[i]) {
     if (row_equals(t, t->dslot[i], vals)) return STATUS_OK;
     i = (i + 1) & (t->dcap - 1);
@@ -365,7 +375,7 @@ Status facts_load(Table *t, const Relation *r, SymTab *syms, const char *path, E
     if (st == STATUS_OK && malformed) st = err_set(e, CODE_FACTS_MALFORMED, path, line, "a row of %.*s is malformed", (int)r->name.n, r->name.s);
     if (st == STATUS_OK) {
       bool added;
-      st = table_add(t, vals, ORG_INPUT, 0, 0, NULL, 0, &added, e);
+      st = table_add(t, table_hash_row(t, vals), vals, ORG_INPUT, 0, 0, NULL, 0, &added, e);
     }
     p = eol + 1;
   }
