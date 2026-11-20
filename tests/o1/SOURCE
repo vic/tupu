@@ -1,0 +1,6 @@
+Souffle 2.5 (nixpkgs souffle.src)
+url: https://github.com/souffle-lang/souffle/archive/2.5.tar.gz
+hash: sha256-Umfeb1pGAeK5K3QDRD/labC6IJLsPPJ73ycsAV4yPNM=
+store path: /nix/store/amgy7b129kxhz6n6vvbnbd2g4992h8ca-source
+copied: tests/evaluation/{neg1..neg6,indirect_negation,recursion,mutrecursion,relop,plus,range}, tests/example/{tc,andersen,pointsto,dominance,rsg}
+license: LICENSE (UPL 1.0 as shipped by Souffle)
