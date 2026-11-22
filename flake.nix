@@ -20,18 +20,20 @@
           version = "0.0.0";
           src = pkgs.lib.fileset.toSource {
             root = ./.;
-            fileset = pkgs.lib.fileset.unions [ ./Justfile ./src ];
+            fileset = pkgs.lib.fileset.unions [ ./Justfile ./src ./include ];
           };
           nativeBuildInputs = [ pkgs.just pkgs.gcc ];
           dontConfigure = true;
           buildPhase = ''
             runHook preBuild
-            just build
+            just build lib
             runHook postBuild
           '';
           installPhase = ''
             runHook preInstall
             install -Dm755 build/tupu $out/bin/tupu
+            install -Dm644 build/libtupu.a $out/lib/libtupu.a
+            install -Dm644 include/tupu.h $out/include/tupu.h
             runHook postInstall
           '';
         };

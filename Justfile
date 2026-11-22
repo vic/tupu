@@ -34,10 +34,24 @@ unit:
     gcc {{warn}} -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all {{safe}} -o build/unit tests/unit.c $(ls src/*.c | grep -v '/main.c$') -pthread
     timeout 10 build/unit
 
+# static library build (libtupu.a)
+lib:
+    mkdir -p build/obj
+    for f in $(ls src/*.c | grep -v '/main.c$'); do gcc {{warn}} -O2 -DNDEBUG {{safe}} -Iinclude -c "$f" -o "build/obj/$(basename "$f" .c).o"; done
+    ar rcs build/libtupu.a build/obj/*.o
+
+# in-process C library API tests (ASan/UBSan and release)
+api-test: lib
+    mkdir -p build
+    gcc {{warn}} -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all {{safe}} -Iinclude -o build/api_test_san tests/api_test.c $(ls src/*.c | grep -v '/main.c$') -pthread
+    timeout 30 build/api_test_san
+    gcc {{warn}} -O2 -DNDEBUG {{safe}} -Iinclude -o build/api_test tests/api_test.c build/libtupu.a -pthread
+    timeout 30 build/api_test
+
 # every oracle on the binary of `nix build` (result/bin/tupu, built once: no test recipe compiles tupu again) and on the san build.
 # A failure never stops the run; the exit status is 1 when any line failed. The O5 mutants and the counters check compile
 # mutant builds on purpose: they run in `just mutants`.
-test: san unit
+test: san unit api-test
     #!/bin/sh
     rc=0
     B=result/bin/tupu

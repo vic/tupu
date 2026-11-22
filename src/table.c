@@ -17,8 +17,33 @@ Status table_init(Table *t, const Relation *r, bool want_prov, Err *e) {
   return STATUS_OK;
 }
 
+static Status dedup_grow(Table *t, Err *e);
+
 Status table_enable_bitset(Table *t, uint32_t nsyms, Err *e) {
-  if (!t->fast2 || nsyms == 0 || nsyms > 8192 || t->bits != NULL) return STATUS_OK;
+  if (!t->fast2 || nsyms == 0) return STATUS_OK;
+  if (t->bits != NULL) {
+    if (nsyms <= t->bit_nsyms) return STATUS_OK;
+    for (uint32_t i = 0; i < t->bit_nsyms; i++) free(t->bits[i]);
+    free(t->bits);
+    t->bits = NULL;
+    t->bit_nsyms = 0;
+    t->bit_words = 0;
+    if (nsyms > 8192) {
+      while (t->dcap == 0 || (size_t)(t->count + 1) * 20 > t->dcap * 13) {
+        if (dedup_grow(t, e) != STATUS_OK) return STATUS_ERR;
+      }
+      const uint32_t *c0 = (const uint32_t *)t->col[0];
+      const uint32_t *c1 = (const uint32_t *)t->col[1];
+      for (uint32_t r = 0; r < t->count; r++) {
+        uint64_t k = ((uint64_t)c0[r] << 32) | (uint64_t)c1[r];
+        size_t i = mix64(k) & (t->dcap - 1);
+        while (t->dkey[i] != UINT64_MAX) i = (i + 1) & (t->dcap - 1);
+        t->dkey[i] = k;
+      }
+      return STATUS_OK;
+    }
+  }
+  if (nsyms > 8192) return STATUS_OK;
   uint32_t words = (nsyms + 63u) / 64u;
   uint64_t **bits = calloc(nsyms, sizeof *bits);
   if (bits == NULL) return err_oom(e);
@@ -45,6 +70,25 @@ Status table_enable_bitset(Table *t, uint32_t nsyms, Err *e) {
   return STATUS_OK;
 }
 
+void table_clear(Table *t) {
+  t->count = 0;
+  t->pool_n = 0;
+  if (t->bits != NULL) {
+    for (uint32_t i = 0; i < t->bit_nsyms; i++)
+      if (t->bits[i] != NULL) memset(t->bits[i], 0, (size_t)t->bit_words * sizeof(uint64_t));
+  }
+  if (t->dkey != NULL && t->dcap > 0) memset(t->dkey, 0xFF, t->dcap * sizeof *t->dkey);
+  if (t->dsl != NULL && t->dcap > 0) memset(t->dsl, 0, t->dcap * sizeof *t->dsl);
+  for (int i = 0; i < t->nidx; i++) {
+    Index *ix = t->idx[i];
+    for (uint32_t b = 0; b < ix->nbk; b++) ix->bks[b].n = 0;
+    ix->nbk = 0;
+    ix->synced = 0;
+    if (ix->used != NULL && ix->scap > 0) memset(ix->used, 0, ix->scap);
+    if (ix->direct != NULL && ix->dircap > 0) memset(ix->direct, 0xFF, ix->dircap * sizeof *ix->direct);
+  }
+}
+
 void table_free(Table *t) {
   for (int c = 0; c < t->ncols && t->col != NULL; c++) free(t->col[c]);
   free(t->col);
@@ -62,7 +106,7 @@ void table_free(Table *t) {
     Index *ix = t->idx[i];
     free(ix->cols);
     free(ix->hash);
-    for (uint32_t b = 0; b < ix->nbk; b++) free(ix->bks[b].blk);
+    for (uint32_t b = 0; b < ix->bkcap; b++) free(ix->bks[b].blk);
     free(ix->bks);
     free(ix->keys);
     free(ix->fcols);
@@ -222,6 +266,13 @@ Status table_add(Table *t, uint64_t h, const I128 *vals, Origin org, uint32_t re
   if (t->bits != NULL) {
     bv0 = (uint32_t)vals[0];
     bv1 = (uint32_t)vals[1];
+    if (bv0 >= t->bit_nsyms || bv1 >= t->bit_nsyms) {
+      uint32_t need = (bv0 > bv1 ? bv0 : bv1) + 1;
+      uint32_t target = need <= 8192 ? (need < 256 ? 256 : (need * 2 <= 8192 ? need * 2 : 8192)) : need;
+      if (table_enable_bitset(t, target, e) != STATUS_OK) return STATUS_ERR;
+    }
+  }
+  if (t->bits != NULL) {
     if (t->bits[bv0] != NULL && ((t->bits[bv0][bv1 >> 6] >> (bv1 & 63)) & 1ULL) != 0) return STATUS_OK;
   } else {
     bool need_grow = t->dcap == 0 || ((t->fast1 || t->fast2) ? ((size_t)(t->count + 1) * 20 > t->dcap * 13) : ((size_t)(t->count + 1) * 2 > t->dcap));
@@ -413,11 +464,12 @@ Status index_sync(Index *ix, const Table *t, Err *e) {
           uint32_t nc = ix->bkcap == 0 ? 256 : ix->bkcap * 2;
           Bucket *nbk = realloc(ix->bks, (size_t)nc * sizeof *nbk);
           if (nbk == NULL) { st = err_oom(e); break; }
+          memset(nbk + ix->bkcap, 0, (size_t)(nc - ix->bkcap) * sizeof *nbk);
           ix->bks = nbk;
           ix->bkcap = nc;
         }
         bi = ix->nbk++;
-        memset(&ix->bks[bi], 0, sizeof ix->bks[bi]);
+        ix->bks[bi].n = 0;
         ix->direct[sym] = bi;
       }
       st = bucket_push(ix, &ix->bks[bi], r, t, e);
@@ -454,6 +506,7 @@ Status index_sync(Index *ix, const Table *t, Err *e) {
         uint32_t nc = ix->bkcap == 0 ? 256 : ix->bkcap * 2;
         Bucket *nbk = realloc(ix->bks, (size_t)nc * sizeof *nbk);
         if (nbk == NULL) { st = err_oom(e); break; }
+        memset(nbk + ix->bkcap, 0, (size_t)(nc - ix->bkcap) * sizeof *nbk);
         ix->bks = nbk;
         uint8_t *nkeys = realloc(ix->keys, (size_t)nc * ix->kbytes + 1);
         if (nkeys == NULL) { st = err_oom(e); break; }
@@ -461,7 +514,7 @@ Status index_sync(Index *ix, const Table *t, Err *e) {
         ix->bkcap = nc;
       }
       bi = ix->nbk++;
-      memset(&ix->bks[bi], 0, sizeof ix->bks[bi]);
+      ix->bks[bi].n = 0;
       memcpy(ix->keys + (size_t)bi * ix->kbytes, kb, ix->kbytes);
       ix->used[i] = 1;
       ix->hash[i] = h;

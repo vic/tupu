@@ -77,6 +77,8 @@ typedef struct Engine {
 } Engine;
 
 Status engine_open(Engine *x, Program *p, const char *facts_dir, uint64_t budget, bool prov, size_t nthreads, Err *e);
+Status engine_open_mem(Engine *x, Program *p, uint64_t budget, size_t nthreads, Err *e);
+Status engine_reset(Engine *x, Err *e);
 Status engine_eval(Engine *x, Err *e);
 void engine_close(Engine *x);
 /* O6: every row of every output relation derives again from its rule and its body rows against the final relations */

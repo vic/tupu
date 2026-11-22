@@ -485,7 +485,20 @@ void engine_close(Engine *x) {
   memset(x, 0, sizeof *x);
 }
 
-Status engine_open(Engine *x, Program *p, const char *facts_dir, uint64_t budget, bool prov, size_t nthreads, Err *e) {
+static Status load_program_facts(Engine *x, Err *e) {
+  Program *p = x->prog;
+  for (size_t i = 0; i < p->facts.n; i++) {
+    const Fact *f = &p->facts.p[i];
+    I128 *vals = x->cells;
+    for (int c = 0; c < f->atom.nargs; c++) vals[c] = f->atom.args[c]->kind == EX_SYM ? (I128)f->atom.args[c]->sym : f->atom.args[c]->num;
+    bool added;
+    if (table_add(&x->tabs[f->atom.rel], table_hash_row(&x->tabs[f->atom.rel], vals), vals, ORG_FACT, (uint32_t)i, 0, NULL, 0, &added, e) != STATUS_OK)
+      return STATUS_ERR;
+  }
+  return STATUS_OK;
+}
+
+static Status engine_open_common(Engine *x, Program *p, const char *facts_dir, uint64_t budget, bool prov, size_t nthreads, Err *e) {
   memset(x, 0, sizeof *x);
   x->nthreads = nthreads == 0 ? 1 : nthreads;
   x->chunk_step = -1;
@@ -520,27 +533,45 @@ Status engine_open(Engine *x, Program *p, const char *facts_dir, uint64_t budget
   x->body = calloc((size_t)maxatoms + 1, sizeof *x->body);
   if (x->vars == NULL || x->body == NULL) return err_oom(e);
   /* input rows first, in declaration order; then the program facts in text order */
-  for (size_t i = 0; i < n; i++) {
-    const Relation *r = &p->rels.p[i];
-    if (!r->is_input) continue;
-    size_t len = strlen(facts_dir) + r->name.n + 16;
-    char *path = arena_alloc(&p->arena, len);
-    if (path == NULL) return err_oom(e);
-    (void)snprintf(path, len, "%s/%.*s.facts", facts_dir, (int)r->name.n, r->name.s);
-    if (facts_load(&x->tabs[i], r, &p->syms, path, e) != STATUS_OK) return STATUS_ERR;
+  if (facts_dir != NULL) {
+    for (size_t i = 0; i < n; i++) {
+      const Relation *r = &p->rels.p[i];
+      if (!r->is_input) continue;
+      size_t len = strlen(facts_dir) + r->name.n + 16;
+      char *path = arena_alloc(&p->arena, len);
+      if (path == NULL) return err_oom(e);
+      (void)snprintf(path, len, "%s/%.*s.facts", facts_dir, (int)r->name.n, r->name.s);
+      if (facts_load(&x->tabs[i], r, &p->syms, path, e) != STATUS_OK) return STATUS_ERR;
+    }
   }
-  for (size_t i = 0; i < p->facts.n; i++) {
-    const Fact *f = &p->facts.p[i];
-    I128 *vals = x->cells;
-    for (int c = 0; c < f->atom.nargs; c++) vals[c] = f->atom.args[c]->kind == EX_SYM ? (I128)f->atom.args[c]->sym : f->atom.args[c]->num;
-    bool added;
-    if (table_add(&x->tabs[f->atom.rel], table_hash_row(&x->tabs[f->atom.rel], vals), vals, ORG_FACT, (uint32_t)i, 0, NULL, 0, &added, e) != STATUS_OK) return STATUS_ERR;
-  }
+  if (load_program_facts(x, e) != STATUS_OK) return STATUS_ERR;
   if (sym_build_rank(&p->syms, e) != STATUS_OK) return STATUS_ERR;
   if (plan_program(p, &x->strata, x->tabs, &x->naive, &x->delta, e) != STATUS_OK) return STATUS_ERR;
   for (size_t i = 0; i < n; i++)
     if (table_enable_bitset(&x->tabs[i], (uint32_t)p->syms.n, e) != STATUS_OK) return STATUS_ERR;
   return STATUS_OK;
+}
+
+Status engine_open(Engine *x, Program *p, const char *facts_dir, uint64_t budget, bool prov, size_t nthreads, Err *e) {
+  return engine_open_common(x, p, facts_dir, budget, prov, nthreads, e);
+}
+
+Status engine_open_mem(Engine *x, Program *p, uint64_t budget, size_t nthreads, Err *e) {
+  return engine_open_common(x, p, NULL, budget, false, nthreads, e);
+}
+
+Status engine_reset(Engine *x, Err *e) {
+  x->err = e;
+  Program *p = x->prog;
+  for (size_t i = 0; i < p->rels.n; i++) table_clear(&x->tabs[i]);
+  memset(x->rr, 0, (p->rels.n + 1) * sizeof *x->rr);
+  x->added = 0;
+  x->derivations = 0;
+  x->rows_derived = 0;
+  x->probes = 0;
+  x->rounds = 0;
+  x->round = 0;
+  return load_program_facts(x, e);
 }
 
 /* ---- evaluation ---- */
