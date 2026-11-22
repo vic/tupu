@@ -27,9 +27,24 @@ Facts are tab-separated files, one per `.input` relation, named `relation.facts`
 
 Typed `.decl` relations with `symbol` and `number` columns, subtypes and unions, `.input` and `.output`, facts written in the program, and rules with negation, comparisons, arithmetic, `;` and the aggregates `count`, `sum`, `min` and `max`. Components, `.init`, subsumption, records, floats and string functions are not supported: tupu refuses a program that uses them rather than run part of it.
 
+## Benchmarks
+
+tupu runs programs directly with no C++ or Rust compilation step. Even so, it beats compiled Soufflé and compiled FlowLog on wall time across our benchmark set (`tc`, `andersen`, `rsg` under `bench/`, compiled comparator times exclude their build time):
+
+| benchmark | tupu (interpreter) | Soufflé (compiled) | FlowLog (compiled) |
+|---|---|---|---|
+| `tc -j 1` | 0.38 s / 11.8 MB | 0.95 s / 10.0 MB | 4.46 s / 326.8 MB |
+| `tc -j 6` | 0.18 s / 15.4 MB | 0.97 s / 10.0 MB | 2.42 s / 675.5 MB |
+| `andersen -j 1` | 2.21 s / 53.4 MB | 7.20 s / 24.7 MB | > 40 s (timeout) |
+| `andersen -j 6` | 0.72 s / 70.8 MB | 7.27 s / 24.8 MB | > 15 s (timeout) |
+| `rsg -j 1` | 0.09 s / 13.3 MB | 0.16 s / 10.1 MB | 0.37 s / 59.9 MB |
+| `rsg -j 6` | 0.08 s / 13.5 MB | 0.17 s / 10.3 MB | 0.20 s / 147.8 MB |
+
+Peak memory on `andersen` is still higher than compiled Soufflé because tupu keeps a flat hash table alongside its covering index; compacting that table is open work.
+
 ## Status
 
-Early: the engine is being written now. Every change is checked against Soufflé, on Soufflé's own tests and on the rule suite of the Stigi project, and measured against Soufflé and FlowLog for time and memory. The goal is to beat both; the numbers will be here once we have them.
+Working and tested. Every change runs against Soufflé's test programs, the Stigi rule suite (607 cases, 0 diff), exact 64/128-bit arithmetic shapes, multi-thread determinism (`-j 1` equals `-j 2` equals `-j 6`), sanitizer builds, and provenance replay (`-P`).
 
 ```console
 $ nix develop
