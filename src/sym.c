@@ -76,7 +76,7 @@ Status sym_intern(SymTab *s, const char *p, size_t n, uint32_t *id, Err *e) {
   return STATUS_OK;
 }
 
-static const SymTab *cmp_tab;
+static _Thread_local const SymTab *cmp_tab;
 static int cmp_ids(const void *a, const void *b) {
   uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
   size_t lx = cmp_tab->len[x], ly = cmp_tab->len[y];

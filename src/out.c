@@ -29,7 +29,7 @@ typedef struct {
   uint32_t row;
 } Line;
 
-static const char *sort_base;
+static _Thread_local const char *sort_base;
 static int cmp_line(const void *pa, const void *pb) {
   const Line *a = pa, *b = pb;
   size_t m = a->len < b->len ? a->len : b->len;
