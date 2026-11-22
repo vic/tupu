@@ -20,6 +20,13 @@ static bool atom_has_var(const Atom *a, int v) {
     if (expr_has_var(a->args[i], v)) return true;
   return false;
 }
+static bool atoms_share_var(const Atom *a, const Atom *b) {
+  for (int i = 0; i < a->nargs; i++) {
+    const Expr *x = a->args[i];
+    if (x->kind == EX_VAR && atom_has_var(b, x->var)) return true;
+  }
+  return false;
+}
 static bool lit_has_var(const Lit *l, int v) {
   switch (l->kind) {
   case LIT_POS:
@@ -111,7 +118,7 @@ static Status build_atom_step(PCtx *c, const Lit *l, bool *bound, StepKind kind,
 #endif
     else if (c->s->comp[a->rel] == c->comp) st->range = pos < delta_pos ? RANGE_FULL : RANGE_PREV;
     else st->range = RANGE_FULL;
-    if (st->range != RANGE_DELTA && st->nbound != 0) {
+    if (st->nbound != 0) {
       if (table_index(&c->tabs[a->rel], st->cols, st->nbound, &st->idx, c->e) != STATUS_OK) return STATUS_ERR;
     }
   } else if (st->nbound != 0 && !st->exact) {
@@ -212,16 +219,48 @@ static Status plan_lits(PCtx *c, Lit *const *lits, int n, bool *bound, int delta
     if (remaining_pos == 0) break;
     int best = -1, best_score = -1;
     if (!delta_done) {
+      int di = -1;
       for (int i = 0; i < n; i++)
-        if (!placed[i] && tpos[i] == delta_pos) best = i;
+        if (!placed[i] && tpos[i] == delta_pos) di = i;
+      best = di;
+      if (di >= 0 && npos >= 3) {
+        uint32_t best_cnt = UINT32_MAX;
+        int edb_best = -1;
+        for (int i = 0; i < n; i++) {
+          if (i == di || placed[i] || lits[i]->kind != LIT_POS) continue;
+          size_t rel = lits[i]->atom.rel;
+          if (c->s->comp[rel] == c->comp) continue;
+          uint32_t cnt = c->tabs[rel].count;
+          if (cnt > 4096u) continue;
+          if (atoms_share_var(&lits[i]->atom, &lits[di]->atom)) continue;
+          if (edb_best < 0 || cnt < best_cnt) {
+            best_cnt = cnt;
+            edb_best = i;
+          }
+        }
+        if (edb_best >= 0) best = edb_best;
+      }
       delta_done = true;
     } else {
+      bool best_nonrec = false;
+      uint32_t best_cnt = UINT32_MAX;
       for (int i = 0; i < n; i++) {
         if (placed[i] || lits[i]->kind != LIT_POS) continue;
         int sc = score_atom(&lits[i]->atom, bound);
-        if (sc > best_score) {
+        size_t rel = lits[i]->atom.rel;
+        bool nonrec = c->s->comp[rel] != c->comp;
+        uint32_t cnt = c->tabs[rel].count;
+        bool take = false;
+        if (sc > best_score) take = true;
+        else if (sc == best_score && sc > 0) {
+          if (nonrec && !best_nonrec) take = true;
+          else if (nonrec && best_nonrec && cnt < best_cnt) take = true;
+        }
+        if (take) {
           best_score = sc;
           best = i;
+          best_nonrec = nonrec;
+          best_cnt = cnt;
         }
       }
     }

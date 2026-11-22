@@ -472,8 +472,7 @@ Status engine_open(Engine *x, Program *p, const char *facts_dir, uint64_t budget
   x->hv = malloc((maxcols + 1) * sizeof *x->hv);
   x->kbuf = malloc((maxcols + 1) * sizeof(I128));
   x->cells = malloc((maxcols + 1) * sizeof *x->cells);
-  if (x->scratch == NULL || x->hv == NULL || x->cells == NULL) return err_oom(e);
-  if (plan_program(p, &x->strata, x->tabs, &x->naive, &x->delta, e) != STATUS_OK) return STATUS_ERR;
+  if (x->scratch == NULL || x->hv == NULL || x->kbuf == NULL || x->cells == NULL) return err_oom(e);
   int maxvars = 1, maxatoms = 1;
   for (size_t i = 0; i < p->rules.n; i++) {
     if (p->rules.p[i].nvars > maxvars) maxvars = p->rules.p[i].nvars;
@@ -501,7 +500,8 @@ Status engine_open(Engine *x, Program *p, const char *facts_dir, uint64_t budget
     bool added;
     if (table_add(&x->tabs[f->atom.rel], table_hash_row(&x->tabs[f->atom.rel], vals), vals, ORG_FACT, (uint32_t)i, 0, NULL, 0, &added, e) != STATUS_OK) return STATUS_ERR;
   }
-  return sym_build_rank(&p->syms, e);
+  if (sym_build_rank(&p->syms, e) != STATUS_OK) return STATUS_ERR;
+  return plan_program(p, &x->strata, x->tabs, &x->naive, &x->delta, e);
 }
 
 /* ---- evaluation ---- */

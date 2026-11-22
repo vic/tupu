@@ -180,7 +180,8 @@ bool table_contains(const Table *t, const I128 *vals) {
 Status table_add(Table *t, uint64_t h, const I128 *vals, Origin org, uint32_t ref, uint32_t round, const uint32_t *body, int nbody,
                  bool *added, Err *e) {
   *added = false;
-  if (t->dcap == 0 || (size_t)(t->count + 1) * 2 > t->dcap) {
+  bool need_grow = t->dcap == 0 || ((t->fast1 || t->fast2) ? ((size_t)(t->count + 1) * 20 > t->dcap * 13) : ((size_t)(t->count + 1) * 2 > t->dcap));
+  if (need_grow) {
     if (dedup_grow(t, e) != STATUS_OK) return STATUS_ERR;
   }
   size_t i = h & (t->dcap - 1);
