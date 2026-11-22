@@ -12,6 +12,8 @@ Status table_init(Table *t, const Relation *r, bool want_prov, Err *e) {
   if (t->kind == NULL || t->col == NULL) return err_oom(e);
   for (int c = 0; c < r->ncols; c++) t->kind[c] = r->colkind[c];
   t->want_prov = want_prov;
+  t->fast1 = (r->ncols == 1 && r->colkind[0] == BASE_SYMBOL);
+  t->fast2 = (r->ncols == 2 && r->colkind[0] == BASE_SYMBOL && r->colkind[1] == BASE_SYMBOL);
   return STATUS_OK;
 }
 
@@ -23,6 +25,7 @@ void table_free(Table *t) {
   free(t->org_ref);
   free(t->round);
   free(t->dsl);
+  free(t->dkey);
   for (int i = 0; i < t->nidx; i++) {
     Index *ix = t->idx[i];
     free(ix->cols);
@@ -33,6 +36,7 @@ void table_free(Table *t) {
     free(ix->fcols);
     free(ix->bk);
     free(ix->used);
+    free(ix->direct);
     free(ix);
   }
   free(t->idx);
@@ -72,8 +76,28 @@ static bool row_equals(const Table *t, uint32_t row, const I128 *vals) {
   return true;
 }
 
+static inline uint64_t pack_fast_key(const Table *t, const I128 *vals) {
+  return t->fast2 ? (((uint64_t)(uint32_t)vals[0] << 32) | (uint64_t)(uint32_t)vals[1]) : (uint64_t)(uint32_t)vals[0];
+}
+
 static Status dedup_grow(Table *t, Err *e) {
   size_t ncap = t->dcap == 0 ? 1024 : t->dcap * 2;
+  if (t->fast1 || t->fast2) {
+    uint64_t *nk = malloc(ncap * sizeof *nk);
+    if (nk == NULL) return err_oom(e);
+    memset(nk, 0xFF, ncap * sizeof *nk);
+    for (size_t j = 0; j < t->dcap; j++) {
+      uint64_t k = t->dkey[j];
+      if (k == UINT64_MAX) continue;
+      size_t i = mix64(k) & (ncap - 1);
+      while (nk[i] != UINT64_MAX) i = (i + 1) & (ncap - 1);
+      nk[i] = k;
+    }
+    free(t->dkey);
+    t->dkey = nk;
+    t->dcap = ncap;
+    return STATUS_OK;
+  }
   DSlot *ns = calloc(ncap, sizeof *ns);
   if (ns == NULL) return err_oom(e);
   for (uint32_t r = 0; r < t->count; r++) { /* growth only: each row is hashed again from its columns */
@@ -100,10 +124,11 @@ static Status table_grow(Table *t, Err *e) {
     ncol[c] = malloc((size_t)ncap * w);
     if (ncol[c] == NULL) fail = true;
   }
-  uint8_t *ok = malloc(ncap);
-  uint32_t *or2 = malloc((size_t)ncap * sizeof *or2), *rd = malloc((size_t)ncap * sizeof *rd);
+  uint8_t *ok = t->want_prov ? malloc(ncap) : NULL;
+  uint32_t *or2 = t->want_prov ? malloc((size_t)ncap * sizeof *or2) : NULL;
+  uint32_t *rd = t->want_prov ? malloc((size_t)ncap * sizeof *rd) : NULL;
   size_t *po = t->want_prov ? malloc((size_t)ncap * sizeof *po) : NULL;
-  if (ok == NULL || or2 == NULL || rd == NULL || (t->want_prov && po == NULL)) fail = true;
+  if (t->want_prov && (ok == NULL || or2 == NULL || rd == NULL || po == NULL)) fail = true;
   if (fail) {
     for (int c = 0; c < t->ncols; c++) free(ncol[c]);
     free(ncol);
@@ -116,23 +141,29 @@ static Status table_grow(Table *t, Err *e) {
     free(t->col[c]);
     t->col[c] = ncol[c];
   }
-  if (t->count > 0) {
-    memcpy(ok, t->org_kind, t->count);
-    memcpy(or2, t->org_ref, (size_t)t->count * sizeof *or2);
-    memcpy(rd, t->round, (size_t)t->count * sizeof *rd);
-    if (t->want_prov) memcpy(po, t->poff, (size_t)t->count * sizeof *po);
+  if (t->want_prov) {
+    if (t->count > 0) {
+      memcpy(ok, t->org_kind, t->count);
+      memcpy(or2, t->org_ref, (size_t)t->count * sizeof *or2);
+      memcpy(rd, t->round, (size_t)t->count * sizeof *rd);
+      memcpy(po, t->poff, (size_t)t->count * sizeof *po);
+    }
+    free(t->org_kind); free(t->org_ref); free(t->round); free(t->poff);
+    t->org_kind = ok; t->org_ref = or2; t->round = rd; t->poff = po;
   }
-  free(t->org_kind); free(t->org_ref); free(t->round); free(t->poff);
-  t->org_kind = ok; t->org_ref = or2; t->round = rd; t->poff = po;
   t->cap = ncap;
   free(ncol);
   return STATUS_OK;
 }
 
-uint64_t table_hash_row(const Table *t, const I128 *vals) { return hash_vals_all(t, vals); }
+uint64_t table_hash_row(const Table *t, const I128 *vals) {
+  if (t->fast1 || t->fast2) return mix64(pack_fast_key(t, vals));
+  return hash_vals_all(t, vals);
+}
 
 bool table_contains_h(const Table *t, uint64_t h, const I128 *vals) {
   if (t->dcap == 0) return false;
+  if (t->fast1 || t->fast2) return table_contains_fast2(t, pack_fast_key(t, vals), h);
   size_t i = h & (t->dcap - 1);
   while (t->dsl[i].used) {
     if (t->dsl[i].tag == hash_tag(h) && row_equals(t, t->dsl[i].row, vals)) return true; /* equal hashes: read the columns; never trust a hash alone */
@@ -142,13 +173,8 @@ bool table_contains_h(const Table *t, uint64_t h, const I128 *vals) {
 }
 
 bool table_contains(const Table *t, const I128 *vals) {
-  if (t->dcap == 0) return false;
-  size_t i = hash_vals_all(t, vals) & (t->dcap - 1);
-  while (t->dsl[i].used) {
-    if (t->dsl[i].tag == hash_tag(hash_vals_all(t, vals)) && row_equals(t, t->dsl[i].row, vals)) return true;
-    i = (i + 1) & (t->dcap - 1);
-  }
-  return false;
+  uint64_t h = table_hash_row(t, vals);
+  return table_contains_h(t, h, vals);
 }
 
 Status table_add(Table *t, uint64_t h, const I128 *vals, Origin org, uint32_t ref, uint32_t round, const uint32_t *body, int nbody,
@@ -158,9 +184,18 @@ Status table_add(Table *t, uint64_t h, const I128 *vals, Origin org, uint32_t re
     if (dedup_grow(t, e) != STATUS_OK) return STATUS_ERR;
   }
   size_t i = h & (t->dcap - 1);
-  while (t->dsl[i].used) {
-    if (t->dsl[i].tag == hash_tag(h) && row_equals(t, t->dsl[i].row, vals)) return STATUS_OK;
-    i = (i + 1) & (t->dcap - 1);
+  uint64_t fkey = 0;
+  if (t->fast1 || t->fast2) {
+    fkey = pack_fast_key(t, vals);
+    while (t->dkey[i] != UINT64_MAX) {
+      if (t->dkey[i] == fkey) return STATUS_OK;
+      i = (i + 1) & (t->dcap - 1);
+    }
+  } else {
+    while (t->dsl[i].used) {
+      if (t->dsl[i].tag == hash_tag(h) && row_equals(t, t->dsl[i].row, vals)) return STATUS_OK;
+      i = (i + 1) & (t->dcap - 1);
+    }
   }
 #ifdef MUTANT_DEDUPREL
   if (t->count > 0) return STATUS_OK;
@@ -184,12 +219,18 @@ Status table_add(Table *t, uint64_t h, const I128 *vals, Origin org, uint32_t re
     if (t->kind[c] == BASE_SYMBOL) ((uint32_t *)t->col[c])[row] = (uint32_t)vals[c];
     else ((I128 *)t->col[c])[row] = vals[c];
   }
-  t->org_kind[row] = (uint8_t)org;
-  t->org_ref[row] = ref;
-  t->round[row] = round;
-  t->dsl[i].used = 1;
-  t->dsl[i].tag = hash_tag(h);
-  t->dsl[i].row = row;
+  if (t->want_prov) {
+    t->org_kind[row] = (uint8_t)org;
+    t->org_ref[row] = ref;
+    t->round[row] = round;
+  }
+  if (t->fast1 || t->fast2) {
+    t->dkey[i] = fkey;
+  } else {
+    t->dsl[i].used = 1;
+    t->dsl[i].tag = hash_tag(h);
+    t->dsl[i].row = row;
+  }
   t->count++;
   *added = true;
   return STATUS_OK;
@@ -230,6 +271,7 @@ Status table_index(Table *t, const uint32_t *cols, uint32_t nb, Index **out, Err
   }
   memcpy(ix->cols, cols, (size_t)nb * sizeof *cols);
   ix->nb = nb;
+  ix->direct_sym = (nb == 1 && t->kind[cols[0]] == BASE_SYMBOL);
   for (uint32_t c = 0; c < (uint32_t)t->ncols; c++) {
     bool bound = false;
     for (uint32_t i = 0; i < nb; i++) bound = bound || cols[i] == c;
@@ -299,6 +341,39 @@ static Status bucket_push(const Index *ix, Bucket *b, uint32_t row, const Table 
 
 Status index_sync(Index *ix, const Table *t, Err *e) {
   if (ix->synced == t->count) return STATUS_OK;
+  if (ix->direct_sym) {
+    uint32_t col0 = ix->cols[0];
+    const uint32_t *colp = (const uint32_t *)t->col[col0];
+    Status st = STATUS_OK;
+    for (uint32_t r = ix->synced; r < t->count && st == STATUS_OK; r++) {
+      uint32_t sym = colp[r];
+      if ((size_t)sym >= ix->dircap) {
+        size_t nc = ix->dircap == 0 ? 256 : ix->dircap * 2;
+        while (nc <= (size_t)sym) nc *= 2;
+        uint32_t *nd = realloc(ix->direct, nc * sizeof *nd);
+        if (nd == NULL) { st = err_oom(e); break; }
+        memset(nd + ix->dircap, 0xFF, (nc - ix->dircap) * sizeof *nd);
+        ix->direct = nd;
+        ix->dircap = nc;
+      }
+      uint32_t bi = ix->direct[sym];
+      if (bi == UINT32_MAX) {
+        if (ix->nbk == ix->bkcap) {
+          uint32_t nc = ix->bkcap == 0 ? 256 : ix->bkcap * 2;
+          Bucket *nbk = realloc(ix->bks, (size_t)nc * sizeof *nbk);
+          if (nbk == NULL) { st = err_oom(e); break; }
+          ix->bks = nbk;
+          ix->bkcap = nc;
+        }
+        bi = ix->nbk++;
+        memset(&ix->bks[bi], 0, sizeof ix->bks[bi]);
+        ix->direct[sym] = bi;
+      }
+      st = bucket_push(ix, &ix->bks[bi], r, t, e);
+      ix->synced = r + 1;
+    }
+    return st;
+  }
   I128 *vals = malloc(((size_t)t->ncols + 1) * sizeof *vals);
   uint8_t *kb = malloc(ix->kbytes + 1);
   if (vals == NULL || kb == NULL) {
@@ -350,6 +425,7 @@ Status index_sync(Index *ix, const Table *t, Err *e) {
 }
 
 const Bucket *index_find(const Index *ix, const Table *t, const I128 *vals_by_col, uint8_t *key) {
+  if (ix->direct_sym) return index_find_sym(ix, (uint32_t)vals_by_col[ix->cols[0]]);
   if (ix->scap == 0) return NULL;
   uint64_t h = hash_cells(t, ix->cols, ix->nb, vals_by_col);
   pack_key(t, ix, vals_by_col, key);

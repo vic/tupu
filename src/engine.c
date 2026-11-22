@@ -270,19 +270,58 @@ static Status step_atom(Engine *x, const Plan *p, int k, PlanEnd end) {
     }
     return STATUS_OK;
   }
-  I128 *key = x->scratch;
-  for (int i = 0; i < s->nargs; i++) {
-    const ArgSlot *a = &s->args[i];
-    if (a->k == AS_CONST) key[i] = a->val;
-    else if (a->k == AS_BOUND) key[i] = x->vars[a->var];
-  }
   x->probes++;
   const Index *ix = s->idx;
-  const Bucket *bk = index_find(ix, t, key, x->kbuf);
+  const Bucket *bk;
+  if (ix->direct_sym) {
+    const ArgSlot *a0 = &s->args[ix->cols[0]];
+    uint32_t sym = a0->k == AS_CONST ? (uint32_t)a0->val : (uint32_t)x->vars[a0->var];
+    bk = index_find_sym(ix, sym);
+  } else {
+    I128 *key = x->scratch;
+    for (int i = 0; i < s->nargs; i++) {
+      const ArgSlot *a = &s->args[i];
+      if (a->k == AS_CONST) key[i] = a->val;
+      else if (a->k == AS_BOUND) key[i] = x->vars[a->var];
+    }
+    bk = index_find(ix, t, key, x->kbuf);
+  }
   if (bk == NULL) return STATUS_OK;
   const uint32_t *ids = bucket_ids(bk);
   const uint8_t *cells = bucket_cells(bk);
   uint32_t a = lower_bound(ids, bk->n, lo), b = lower_bound(ids, bk->n, hi); /* the range is a contiguous span of the bucket */
+  if (k + 1 == p->nsteps && end == END_HEAD && x->mode == MODE_DERIVE && !x->prov) {
+    const Rule *r = x->cur->rule;
+    const Table *ht = &x->tabs[r->head.rel];
+    if (ht->fast2 && ix->nf == 1 && s->args[ix->fcols[0]].k == AS_FREE && t->kind[ix->fcols[0]] == BASE_SYMBOL &&
+        (r->head.args[0]->kind == EX_VAR || r->head.args[0]->kind == EX_SYM) &&
+        (r->head.args[1]->kind == EX_VAR || r->head.args[1]->kind == EX_SYM)) {
+      int fvar = s->args[ix->fcols[0]].var;
+      bool var0 = r->head.args[0]->kind == EX_VAR && r->head.args[0]->var == fvar;
+      bool var1 = r->head.args[1]->kind == EX_VAR && r->head.args[1]->var == fvar;
+      uint32_t c0 = var0 ? 0 : (r->head.args[0]->kind == EX_SYM ? r->head.args[0]->sym : (uint32_t)x->vars[r->head.args[0]->var]);
+      uint32_t c1 = var1 ? 0 : (r->head.args[1]->kind == EX_SYM ? r->head.args[1]->sym : (uint32_t)x->vars[r->head.args[1]->var]);
+      I128 *hv = x->hv;
+      if (!var0) hv[0] = (I128)c0;
+      if (!var1) hv[1] = (I128)c1;
+      x->derivations += (uint64_t)(b - a);
+      for (uint32_t i = b; i-- > a;) {
+        uint32_t fv;
+        memcpy(&fv, cells + (size_t)i * sizeof(uint32_t), sizeof fv);
+        uint32_t v0 = var0 ? fv : c0;
+        uint32_t v1 = var1 ? fv : c1;
+        uint64_t fkey = ((uint64_t)v0 << 32) | (uint64_t)v1;
+        uint64_t h = mix64(fkey);
+        if (table_contains_fast2(ht, fkey, h)) continue;
+        if (var0) hv[0] = (I128)v0;
+        if (var1) hv[1] = (I128)v1;
+        if (jobset_has(x, ht, h, hv)) continue;
+        x->rows_derived++;
+        if (buf_push(x, ht, h, hv, NULL, 0) != STATUS_OK) return STATUS_ERR;
+      }
+      return STATUS_OK;
+    }
+  }
   for (uint32_t i = b; i-- > a;) { /* newest row first: the order of the chains this replaces, so the first derivation of a row (its provenance) is unchanged */
     if (!load_free(x, s, ix, t, cells + (size_t)i * ix->fbytes)) continue;
     if (s->atom_pos >= 0) memcpy(&x->body[s->atom_pos], &ids[i], sizeof(uint32_t));
@@ -300,14 +339,22 @@ static bool neg_exists(Engine *x, const Step *s) {
     return table_contains(t, vals);
   }
   if (s->idx == NULL) return t->count > 0; /* only wildcards */
-  I128 *key = x->scratch;
-  for (int i = 0; i < s->nargs; i++) {
-    const ArgSlot *a = &s->args[i];
-    if (a->k == AS_CONST) key[i] = a->val;
-    else if (a->k == AS_BOUND) key[i] = x->vars[a->var];
-  }
   x->probes++;
-  const Bucket *bk = index_find(s->idx, t, key, x->kbuf);
+  const Index *ix = s->idx;
+  const Bucket *bk;
+  if (ix->direct_sym) {
+    const ArgSlot *a0 = &s->args[ix->cols[0]];
+    uint32_t sym = a0->k == AS_CONST ? (uint32_t)a0->val : (uint32_t)x->vars[a0->var];
+    bk = index_find_sym(ix, sym);
+  } else {
+    I128 *key = x->scratch;
+    for (int i = 0; i < s->nargs; i++) {
+      const ArgSlot *a = &s->args[i];
+      if (a->k == AS_CONST) key[i] = a->val;
+      else if (a->k == AS_BOUND) key[i] = x->vars[a->var];
+    }
+    bk = index_find(ix, t, key, x->kbuf);
+  }
   return bk != NULL && bk->n > 0; /* the key matched exactly: any row of the bucket is a witness */
 }
 
@@ -607,8 +654,10 @@ static Status run_round(Engine *x, const Variants *vs, int comp, uint32_t round,
     }
     uint32_t lo, hi;
     range_of(x, &v->plan.steps[fa], &lo, &hi);
-    for (uint32_t c = lo; c < hi && st == STATUS_OK; c += CHUNK_ROWS) {
-      uint32_t ch = hi - c > CHUNK_ROWS ? c + CHUNK_ROWS : hi;
+    uint32_t span = hi > lo ? hi - lo : 0;
+    uint32_t chunk = span <= 4096u ? 64u : CHUNK_ROWS;
+    for (uint32_t c = lo; c < hi && st == STATUS_OK; c += chunk) {
+      uint32_t ch = hi - c > chunk ? c + chunk : hi;
       st = jobs_push(&jl, v, fa, c, ch, x->err);
     }
   }

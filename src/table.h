@@ -26,6 +26,9 @@ typedef struct {
   uint8_t *keys; /* kbytes per bucket */
   uint32_t nbk, bkcap;
   uint32_t synced; /* rows [0, synced) are in the index */
+  bool direct_sym;
+  uint32_t *direct;
+  size_t dircap;
 } Index;
 
 typedef struct {
@@ -45,7 +48,9 @@ typedef struct {
   uint32_t *org_ref; /* rule index, program fact index, or 0 for input rows */
   uint32_t *round;
   DSlot *dsl; /* S104: dedup slots, 8 bytes */
+  uint64_t *dkey; /* inline 64-bit dedup keys for 1- and 2-symbol relations; UINT64_MAX = empty */
   size_t dcap;
+  bool fast1, fast2;
   Index **idx;
   int nidx, idxcap;
   bool want_prov;
@@ -56,6 +61,23 @@ typedef struct {
 
 static inline I128 tcell(const Table *t, int c, uint32_t row) {
   return t->kind[c] == BASE_SYMBOL ? (I128)((const uint32_t *)t->col[c])[row] : ((const I128 *)t->col[c])[row];
+}
+
+static inline bool table_contains_fast2(const Table *t, uint64_t key, uint64_t h) {
+  if (t->dcap == 0) return false;
+  size_t i = h & (t->dcap - 1);
+  for (;;) {
+    uint64_t k = t->dkey[i];
+    if (k == UINT64_MAX) return false;
+    if (k == key) return true;
+    i = (i + 1) & (t->dcap - 1);
+  }
+}
+
+static inline const Bucket *index_find_sym(const Index *ix, uint32_t sym) {
+  if ((size_t)sym >= ix->dircap) return NULL;
+  uint32_t bi = ix->direct[sym];
+  return bi == UINT32_MAX ? NULL : &ix->bks[bi];
 }
 
 Status table_init(Table *t, const Relation *r, bool want_prov, Err *e);

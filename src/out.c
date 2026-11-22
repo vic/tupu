@@ -74,10 +74,41 @@ static Status render(const Engine *x, size_t rel, Text *t, Line **out, Err *e) {
   return STATUS_OK;
 }
 
+typedef struct {
+  FILE *f;
+  char *buf;
+  size_t n, cap;
+  bool err;
+} OutBuf;
+
+static void ob_flush(OutBuf *o) {
+  if (o->n > 0 && !o->err) {
+    if (fwrite(o->buf, 1, o->n, o->f) != o->n) o->err = true;
+  }
+  o->n = 0;
+}
+
+static void ob_put(OutBuf *o, const char *s, size_t len) {
+  if (o->err || len == 0) return;
+  if (len > o->cap - o->n) {
+    ob_flush(o);
+    if (o->err) return;
+    if (len >= o->cap) {
+      if (fwrite(s, 1, len, o->f) != len) o->err = true;
+      return;
+    }
+  }
+  memcpy(o->buf + o->n, s, len);
+  o->n += len;
+}
+
 Status out_write(const Engine *x, const char *target, Err *e) {
   const Program *p = x->prog;
   bool to_stdout = strcmp(target, "-") == 0;
-  Text all = { NULL, 0, 0 };
+  char *wbuf = malloc(65536);
+  if (wbuf == NULL) return err_oom(e);
+  OutBuf ob = { stdout, wbuf, 0, 65536, false };
+  bool wrote_stdout = false;
   Status st = STATUS_OK;
   for (size_t r = 0; r < p->rels.n && st == STATUS_OK; r++) {
     const Relation *rel = &p->rels.p[r];
@@ -89,36 +120,47 @@ Status out_write(const Engine *x, const char *target, Err *e) {
       free(rows.b);
       break;
     }
-    Text body = { NULL, 0, 0 };
-    for (uint32_t i = 0; i < x->tabs[r].count && st == STATUS_OK; i++) {
-      st = text_put(&body, rows.b + ls[i].off, ls[i].len, e);
-      if (st == STATUS_OK) st = text_put(&body, "\n", 1, e);
-    }
-    free(ls);
-    free(rows.b);
-    if (st == STATUS_OK && to_stdout) {
-      st = text_put(&all, "relation ", 9, e);
-      if (st == STATUS_OK) st = text_put(&all, rel->name.s, rel->name.n, e);
-      if (st == STATUS_OK) st = text_put(&all, "\n", 1, e);
-      if (st == STATUS_OK) st = text_put(&all, body.b, body.n, e);
-    } else if (st == STATUS_OK) {
+    uint32_t count = x->tabs[r].count;
+    if (to_stdout) {
+      wrote_stdout = true;
+      ob_put(&ob, "relation ", 9);
+      ob_put(&ob, rel->name.s, rel->name.n);
+      ob_put(&ob, "\n", 1);
+      for (uint32_t i = 0; i < count && !ob.err; i++) {
+        if (ls[i].len > 0) ob_put(&ob, rows.b + ls[i].off, ls[i].len);
+        ob_put(&ob, "\n", 1);
+      }
+      if (ob.err) st = err_set(e, CODE_IO_FAILED, NULL, 0, "cannot write stdout");
+    } else {
       size_t len = strlen(target) + rel->name.n + 8;
       char *path = malloc(len);
       if (path == NULL) st = err_oom(e);
       else {
         (void)snprintf(path, len, "%s/%.*s.csv", target, (int)rel->name.n, rel->name.s);
         FILE *f = fopen(path, "wb");
-        if (f == NULL || (body.n > 0 && fwrite(body.b, 1, body.n, f) != body.n) || fclose(f) != 0)
+        if (f == NULL) {
           st = err_set(e, CODE_IO_FAILED, NULL, 0, "cannot write %s", path);
+        } else {
+          OutBuf fob = { f, wbuf, 0, 65536, false };
+          for (uint32_t i = 0; i < count && !fob.err; i++) {
+            if (ls[i].len > 0) ob_put(&fob, rows.b + ls[i].off, ls[i].len);
+            ob_put(&fob, "\n", 1);
+          }
+          ob_flush(&fob);
+          bool bad = fob.err || ferror(f) != 0;
+          if (fclose(f) != 0 || bad) st = err_set(e, CODE_IO_FAILED, NULL, 0, "cannot write %s", path);
+        }
         free(path);
       }
     }
-    free(body.b);
+    free(ls);
+    free(rows.b);
   }
-  if (st == STATUS_OK && to_stdout && all.n > 0) {
-    if (fwrite(all.b, 1, all.n, stdout) != all.n || fflush(stdout) != 0) st = err_set(e, CODE_IO_FAILED, NULL, 0, "cannot write stdout");
+  if (st == STATUS_OK && to_stdout && wrote_stdout) {
+    ob_flush(&ob);
+    if (ob.err || ferror(stdout) != 0 || fflush(stdout) != 0) st = err_set(e, CODE_IO_FAILED, NULL, 0, "cannot write stdout");
   }
-  free(all.b);
+  free(wbuf);
   return st;
 }
 
