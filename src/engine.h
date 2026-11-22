@@ -28,6 +28,23 @@ typedef struct {
   const Expr *expr; /* NULL for count */
 } Acc;
 
+typedef struct {
+  const Variant *v;
+  int step; /* the first atom step of the plan, or -1 */
+  uint32_t lo, hi;
+  Buf buf;
+  Err err;
+  Status st;
+  size_t seq; /* order of completion, used only by the MERGEORDER mutant */
+} Job;
+
+typedef struct JobList {
+  Job *p;
+  size_t n, cap;
+} JobList;
+
+struct ThreadPool;
+
 typedef struct Engine {
   Program *prog;
   Strata strata;
@@ -47,6 +64,8 @@ typedef struct Engine {
   Acc *acc;
   Err *err;
   size_t nthreads;
+  struct ThreadPool *tpool;
+  JobList jl;
   size_t nvars_max, ncols_max, natoms_max;
   int chunk_step; /* S80: the plan step whose range this job cuts, or -1 */
   uint32_t chunk_lo, chunk_hi;

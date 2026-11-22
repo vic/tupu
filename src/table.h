@@ -51,6 +51,8 @@ typedef struct {
   uint64_t *dkey; /* inline 64-bit dedup keys for 1- and 2-symbol relations; UINT64_MAX = empty */
   size_t dcap;
   bool fast1, fast2;
+  uint64_t **bits;
+  uint32_t bit_nsyms, bit_words;
   Index **idx;
   int nidx, idxcap;
   bool want_prov;
@@ -81,6 +83,7 @@ static inline const Bucket *index_find_sym(const Index *ix, uint32_t sym) {
 }
 
 Status table_init(Table *t, const Relation *r, bool want_prov, Err *e);
+Status table_enable_bitset(Table *t, uint32_t nsyms, Err *e);
 void table_free(Table *t);
 /* add a row (dedup): *added tells whether it was new. A table past 2^32-2 rows is datalog-budget. */
 Status table_add(Table *t, uint64_t h, const I128 *vals, Origin org, uint32_t ref, uint32_t round, const uint32_t *body, int nbody,

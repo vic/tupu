@@ -17,6 +17,34 @@ Status table_init(Table *t, const Relation *r, bool want_prov, Err *e) {
   return STATUS_OK;
 }
 
+Status table_enable_bitset(Table *t, uint32_t nsyms, Err *e) {
+  if (!t->fast2 || nsyms == 0 || nsyms > 8192 || t->bits != NULL) return STATUS_OK;
+  uint32_t words = (nsyms + 63u) / 64u;
+  uint64_t **bits = calloc(nsyms, sizeof *bits);
+  if (bits == NULL) return err_oom(e);
+  const uint32_t *c0 = (const uint32_t *)t->col[0];
+  const uint32_t *c1 = (const uint32_t *)t->col[1];
+  for (uint32_t r = 0; r < t->count; r++) {
+    uint32_t v0 = c0[r], v1 = c1[r];
+    if (bits[v0] == NULL) {
+      bits[v0] = calloc(words, sizeof(uint64_t));
+      if (bits[v0] == NULL) {
+        for (uint32_t i = 0; i < nsyms; i++) free(bits[i]);
+        free(bits);
+        return err_oom(e);
+      }
+    }
+    bits[v0][v1 >> 6] |= (1ULL << (v1 & 63));
+  }
+  t->bits = bits;
+  t->bit_nsyms = nsyms;
+  t->bit_words = words;
+  free(t->dkey);
+  t->dkey = NULL;
+  t->dcap = 0;
+  return STATUS_OK;
+}
+
 void table_free(Table *t) {
   for (int c = 0; c < t->ncols && t->col != NULL; c++) free(t->col[c]);
   free(t->col);
@@ -26,6 +54,10 @@ void table_free(Table *t) {
   free(t->round);
   free(t->dsl);
   free(t->dkey);
+  if (t->bits != NULL) {
+    for (uint32_t i = 0; i < t->bit_nsyms; i++) free(t->bits[i]);
+    free(t->bits);
+  }
   for (int i = 0; i < t->nidx; i++) {
     Index *ix = t->idx[i];
     free(ix->cols);
@@ -162,6 +194,10 @@ uint64_t table_hash_row(const Table *t, const I128 *vals) {
 }
 
 bool table_contains_h(const Table *t, uint64_t h, const I128 *vals) {
+  if (t->bits != NULL) {
+    uint32_t v0 = (uint32_t)vals[0], v1 = (uint32_t)vals[1];
+    return v0 < t->bit_nsyms && v1 < t->bit_nsyms && t->bits[v0] != NULL && ((t->bits[v0][v1 >> 6] >> (v1 & 63)) & 1ULL) != 0;
+  }
   if (t->dcap == 0) return false;
   if (t->fast1 || t->fast2) return table_contains_fast2(t, pack_fast_key(t, vals), h);
   size_t i = h & (t->dcap - 1);
@@ -180,28 +216,40 @@ bool table_contains(const Table *t, const I128 *vals) {
 Status table_add(Table *t, uint64_t h, const I128 *vals, Origin org, uint32_t ref, uint32_t round, const uint32_t *body, int nbody,
                  bool *added, Err *e) {
   *added = false;
-  bool need_grow = t->dcap == 0 || ((t->fast1 || t->fast2) ? ((size_t)(t->count + 1) * 20 > t->dcap * 13) : ((size_t)(t->count + 1) * 2 > t->dcap));
-  if (need_grow) {
-    if (dedup_grow(t, e) != STATUS_OK) return STATUS_ERR;
-  }
-  size_t i = h & (t->dcap - 1);
+  size_t i = 0;
   uint64_t fkey = 0;
-  if (t->fast1 || t->fast2) {
-    fkey = pack_fast_key(t, vals);
-    while (t->dkey[i] != UINT64_MAX) {
-      if (t->dkey[i] == fkey) return STATUS_OK;
-      i = (i + 1) & (t->dcap - 1);
-    }
+  uint32_t bv0 = 0, bv1 = 0;
+  if (t->bits != NULL) {
+    bv0 = (uint32_t)vals[0];
+    bv1 = (uint32_t)vals[1];
+    if (t->bits[bv0] != NULL && ((t->bits[bv0][bv1 >> 6] >> (bv1 & 63)) & 1ULL) != 0) return STATUS_OK;
   } else {
-    while (t->dsl[i].used) {
-      if (t->dsl[i].tag == hash_tag(h) && row_equals(t, t->dsl[i].row, vals)) return STATUS_OK;
-      i = (i + 1) & (t->dcap - 1);
+    bool need_grow = t->dcap == 0 || ((t->fast1 || t->fast2) ? ((size_t)(t->count + 1) * 20 > t->dcap * 13) : ((size_t)(t->count + 1) * 2 > t->dcap));
+    if (need_grow) {
+      if (dedup_grow(t, e) != STATUS_OK) return STATUS_ERR;
+    }
+    i = h & (t->dcap - 1);
+    if (t->fast1 || t->fast2) {
+      fkey = pack_fast_key(t, vals);
+      while (t->dkey[i] != UINT64_MAX) {
+        if (t->dkey[i] == fkey) return STATUS_OK;
+        i = (i + 1) & (t->dcap - 1);
+      }
+    } else {
+      while (t->dsl[i].used) {
+        if (t->dsl[i].tag == hash_tag(h) && row_equals(t, t->dsl[i].row, vals)) return STATUS_OK;
+        i = (i + 1) & (t->dcap - 1);
+      }
     }
   }
 #ifdef MUTANT_DEDUPREL
   if (t->count > 0) return STATUS_OK;
 #endif
   if (t->count == UINT32_MAX - 1) return err_set(e, CODE_DATALOG_BUDGET, NULL, 0, "a table reached 2^32-2 rows");
+  if (t->bits != NULL && t->bits[bv0] == NULL) {
+    t->bits[bv0] = calloc(t->bit_words, sizeof(uint64_t));
+    if (t->bits[bv0] == NULL) return err_oom(e);
+  }
   if (t->count == t->cap && table_grow(t, e) != STATUS_OK) return STATUS_ERR;
   if (t->want_prov) {
     if (t->pool_n + (size_t)nbody > t->pool_cap) {
@@ -225,7 +273,9 @@ Status table_add(Table *t, uint64_t h, const I128 *vals, Origin org, uint32_t re
     t->org_ref[row] = ref;
     t->round[row] = round;
   }
-  if (t->fast1 || t->fast2) {
+  if (t->bits != NULL) {
+    t->bits[bv0][bv1 >> 6] |= (1ULL << (bv1 & 63));
+  } else if (t->fast1 || t->fast2) {
     t->dkey[i] = fkey;
   } else {
     t->dsl[i].used = 1;

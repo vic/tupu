@@ -305,6 +305,38 @@ static Status step_atom(Engine *x, const Plan *p, int k, PlanEnd end) {
       if (!var0) hv[0] = (I128)c0;
       if (!var1) hv[1] = (I128)c1;
       x->derivations += (uint64_t)(b - a);
+      if (ht->bits != NULL) {
+        if (!var0 && var1) {
+          const uint64_t *brow = c0 < ht->bit_nsyms ? ht->bits[c0] : NULL;
+          for (uint32_t i = b; i-- > a;) {
+            uint32_t fv;
+            memcpy(&fv, cells + (size_t)i * sizeof(uint32_t), sizeof fv);
+            if (brow != NULL && ((brow[fv >> 6] >> (fv & 63)) & 1ULL) != 0) continue;
+            uint64_t fkey = ((uint64_t)c0 << 32) | (uint64_t)fv;
+            uint64_t h = mix64(fkey);
+            hv[1] = (I128)fv;
+            if (jobset_has(x, ht, h, hv)) continue;
+            x->rows_derived++;
+            if (buf_push(x, ht, h, hv, NULL, 0) != STATUS_OK) return STATUS_ERR;
+          }
+        } else {
+          for (uint32_t i = b; i-- > a;) {
+            uint32_t fv;
+            memcpy(&fv, cells + (size_t)i * sizeof(uint32_t), sizeof fv);
+            uint32_t v0 = var0 ? fv : c0;
+            uint32_t v1 = var1 ? fv : c1;
+            if (v0 < ht->bit_nsyms && ht->bits[v0] != NULL && ((ht->bits[v0][v1 >> 6] >> (v1 & 63)) & 1ULL) != 0) continue;
+            uint64_t fkey = ((uint64_t)v0 << 32) | (uint64_t)v1;
+            uint64_t h = mix64(fkey);
+            if (var0) hv[0] = (I128)v0;
+            if (var1) hv[1] = (I128)v1;
+            if (jobset_has(x, ht, h, hv)) continue;
+            x->rows_derived++;
+            if (buf_push(x, ht, h, hv, NULL, 0) != STATUS_OK) return STATUS_ERR;
+          }
+        }
+        return STATUS_OK;
+      }
       for (uint32_t i = b; i-- > a;) {
         uint32_t fv;
         memcpy(&fv, cells + (size_t)i * sizeof(uint32_t), sizeof fv);
@@ -433,8 +465,12 @@ static Status ex_run(Engine *x, const Plan *p, int k, PlanEnd end) {
   return STATUS_OK;
 }
 
+static void tpool_destroy(struct ThreadPool *tp);
+
 /* ---- open: tables, plans, facts ---- */
 void engine_close(Engine *x) {
+  tpool_destroy(x->tpool);
+  free(x->jl.p);
   if (x->tabs != NULL)
     for (size_t i = 0; i < x->prog->rels.n; i++) table_free(&x->tabs[i]);
   free(x->tabs);
@@ -501,7 +537,10 @@ Status engine_open(Engine *x, Program *p, const char *facts_dir, uint64_t budget
     if (table_add(&x->tabs[f->atom.rel], table_hash_row(&x->tabs[f->atom.rel], vals), vals, ORG_FACT, (uint32_t)i, 0, NULL, 0, &added, e) != STATUS_OK) return STATUS_ERR;
   }
   if (sym_build_rank(&p->syms, e) != STATUS_OK) return STATUS_ERR;
-  return plan_program(p, &x->strata, x->tabs, &x->naive, &x->delta, e);
+  if (plan_program(p, &x->strata, x->tabs, &x->naive, &x->delta, e) != STATUS_OK) return STATUS_ERR;
+  for (size_t i = 0; i < n; i++)
+    if (table_enable_bitset(&x->tabs[i], (uint32_t)p->syms.n, e) != STATUS_OK) return STATUS_ERR;
+  return STATUS_OK;
 }
 
 /* ---- evaluation ---- */
@@ -516,25 +555,9 @@ static Status sync_indexes(Engine *x, int comp) {
   return STATUS_OK;
 }
 
-typedef struct JobList JobList;
 static Status merge(Engine *x, JobList *jl, uint32_t round, uint64_t *new_rows);
 /* ---- S80: a round is a list of jobs, one per (rule variant, chunk of 4096 rows of its first atom), in that order ---- */
 #define CHUNK_ROWS 4096u
-
-typedef struct {
-  const Variant *v;
-  int step; /* the first atom step of the plan, or -1 */
-  uint32_t lo, hi;
-  Buf buf;
-  Err err;
-  Status st;
-  size_t seq; /* order of completion, used only by the MERGEORDER mutant */
-} Job;
-
-struct JobList {
-  Job *p;
-  size_t n, cap;
-};
 
 typedef struct {
   Engine *g;
@@ -619,37 +642,133 @@ static void run_job(Engine *w, Job *j) {
   j->buf.hcap = 0;
 }
 
-static void *pool_main(void *arg) {
-  Pool *pl = arg;
-  Worker wk;
-  if (worker_init(&wk, pl->g) != STATUS_OK) {
-    worker_free(&wk);
-    /* an allocation failure of a worker: every job it would take is taken by the others; if none runs, the caller sees it */
-    return NULL;
-  }
+static void worker_run_pool(Worker *wk, Pool *pl) {
+  wk->w.round = pl->g->round;
+  wk->w.derivations = 0;
+  wk->w.rows_derived = 0;
+  wk->w.probes = 0;
   for (;;) {
     size_t i = atomic_fetch_add(pl->next, 1);
     if (i >= pl->jobs->n) break;
-    run_job(&wk.w, &pl->jobs->p[i]);
+    run_job(&wk->w, &pl->jobs->p[i]);
     pl->jobs->p[i].seq = atomic_fetch_add(&pl->seq, 1);
   }
-  atomic_fetch_add(&pl->derivations, wk.w.derivations);
-  atomic_fetch_add(&pl->rows, wk.w.rows_derived);
-  atomic_fetch_add(&pl->probes, wk.w.probes);
-  worker_free(&wk);
-  return NULL;
+  atomic_fetch_add(&pl->derivations, wk->w.derivations);
+  atomic_fetch_add(&pl->rows, wk->w.rows_derived);
+  atomic_fetch_add(&pl->probes, wk->w.probes);
+}
+
+typedef struct {
+  struct ThreadPool *tp;
+  size_t id;
+} WorkerArg;
+
+struct ThreadPool {
+  pthread_mutex_t mu;
+  pthread_cond_t cv_go;
+  pthread_cond_t cv_done;
+  uint64_t epoch;
+  size_t active;
+  size_t nrun;
+  bool stop;
+  Pool *cur_pl;
+  size_t nworkers;
+  pthread_t th[63];
+  WorkerArg args[63];
+  Worker workers[63];
+  Worker main_wk;
+  bool sync_init;
+};
+
+static void *tpool_worker_main(void *arg) {
+  WorkerArg *wa = arg;
+  struct ThreadPool *tp = wa->tp;
+  size_t id = wa->id;
+  Worker *wk = &tp->workers[id];
+  uint64_t my_epoch = 0;
+  pthread_mutex_lock(&tp->mu);
+  for (;;) {
+    while (!tp->stop && (tp->epoch == my_epoch || id >= tp->nrun)) pthread_cond_wait(&tp->cv_go, &tp->mu);
+    if (tp->stop) {
+      pthread_mutex_unlock(&tp->mu);
+      return NULL;
+    }
+    my_epoch = tp->epoch;
+    Pool *pl = tp->cur_pl;
+    pthread_mutex_unlock(&tp->mu);
+    worker_run_pool(wk, pl);
+    pthread_mutex_lock(&tp->mu);
+    tp->active--;
+    if (tp->active == 0) pthread_cond_signal(&tp->cv_done);
+  }
+}
+
+static Status tpool_ensure(Engine *x, Err *e) {
+  if (x->tpool != NULL) return STATUS_OK;
+  struct ThreadPool *tp = calloc(1, sizeof *tp);
+  if (tp == NULL) return err_oom(e);
+  if (worker_init(&tp->main_wk, x) != STATUS_OK) {
+    worker_free(&tp->main_wk);
+    free(tp);
+    return err_oom(e);
+  }
+  size_t nt_max = x->nthreads > 64 ? 64 : x->nthreads;
+  size_t nw = nt_max > 1 ? nt_max - 1 : 0;
+  if (nw > 0) {
+    pthread_mutex_init(&tp->mu, NULL);
+    pthread_cond_init(&tp->cv_go, NULL);
+    pthread_cond_init(&tp->cv_done, NULL);
+    tp->sync_init = true;
+    for (size_t i = 0; i < nw; i++) {
+      if (worker_init(&tp->workers[i], x) != STATUS_OK) {
+        worker_free(&tp->workers[i]);
+        break;
+      }
+      tp->args[i].tp = tp;
+      tp->args[i].id = i;
+      if (pthread_create(&tp->th[i], NULL, tpool_worker_main, &tp->args[i]) != 0) {
+        worker_free(&tp->workers[i]);
+        break;
+      }
+      tp->nworkers++;
+    }
+  }
+  x->tpool = tp;
+  return STATUS_OK;
+}
+
+static void tpool_destroy(struct ThreadPool *tp) {
+  if (tp == NULL) return;
+  if (tp->nworkers > 0) {
+    pthread_mutex_lock(&tp->mu);
+    tp->stop = true;
+    pthread_cond_broadcast(&tp->cv_go);
+    pthread_mutex_unlock(&tp->mu);
+    for (size_t i = 0; i < tp->nworkers; i++) {
+      (void)pthread_join(tp->th[i], NULL);
+      worker_free(&tp->workers[i]);
+    }
+  }
+  if (tp->sync_init) {
+    pthread_cond_destroy(&tp->cv_done);
+    pthread_cond_destroy(&tp->cv_go);
+    pthread_mutex_destroy(&tp->mu);
+  }
+  worker_free(&tp->main_wk);
+  free(tp);
 }
 
 /* build the jobs of this round, run them on up to x->nthreads threads, then merge the buffers in job order */
 static Status run_round(Engine *x, const Variants *vs, int comp, uint32_t round, uint64_t *new_rows) {
-  JobList jl = { NULL, 0, 0 };
+  JobList *jl = &x->jl;
+  jl->n = 0;
   Status st = STATUS_OK;
   for (size_t i = 0; i < vs->n && st == STATUS_OK; i++) {
     const Variant *v = &vs->p[i];
     if (v->comp != comp) continue;
     int fa = first_atom_step(v);
     if (fa < 0) {
-      st = jobs_push(&jl, v, -1, 0, 0, x->err);
+      st = jobs_push(jl, v, -1, 0, 0, x->err);
       continue;
     }
     uint32_t lo, hi;
@@ -658,38 +777,52 @@ static Status run_round(Engine *x, const Variants *vs, int comp, uint32_t round,
     uint32_t chunk = span <= 4096u ? 64u : CHUNK_ROWS;
     for (uint32_t c = lo; c < hi && st == STATUS_OK; c += chunk) {
       uint32_t ch = hi - c > chunk ? c + chunk : hi;
-      st = jobs_push(&jl, v, fa, c, ch, x->err);
+      st = jobs_push(jl, v, fa, c, ch, x->err);
     }
   }
   if (st != STATUS_OK) {
-    free(jl.p);
+    jl->n = 0;
     return st;
   }
+  if (tpool_ensure(x, x->err) != STATUS_OK) {
+    jl->n = 0;
+    return STATUS_ERR;
+  }
+  struct ThreadPool *tp = x->tpool;
   atomic_size_t next = 0;
-  Pool pl = { x, &jl, &next, 0, 0, 0, 0 };
-  size_t nt = x->nthreads < jl.n ? x->nthreads : jl.n;
-  pthread_t th[64];
-  size_t started = 0;
-  if (nt > 64) nt = 64;
-  for (size_t t = 1; t < nt; t++)
-    if (pthread_create(&th[started], NULL, pool_main, &pl) == 0) started++;
-  pool_main(&pl); /* the calling thread works too; with no thread started it runs every job */
-  for (size_t t = 0; t < started; t++) (void)pthread_join(th[t], NULL);
+  Pool pl = { x, jl, &next, 0, 0, 0, 0 };
+  size_t nrun = 0;
+  if (tp->nworkers > 0 && jl->n > 1) nrun = jl->n - 1 < tp->nworkers ? jl->n - 1 : tp->nworkers;
+  if (nrun > 0) {
+    pthread_mutex_lock(&tp->mu);
+    tp->cur_pl = &pl;
+    tp->nrun = nrun;
+    tp->active = nrun;
+    tp->epoch++;
+    pthread_cond_broadcast(&tp->cv_go);
+    pthread_mutex_unlock(&tp->mu);
+  }
+  worker_run_pool(&tp->main_wk, &pl);
+  if (nrun > 0) {
+    pthread_mutex_lock(&tp->mu);
+    while (tp->active > 0) pthread_cond_wait(&tp->cv_done, &tp->mu);
+    pthread_mutex_unlock(&tp->mu);
+  }
   x->derivations += atomic_load(&pl.derivations);
   x->rows_derived += atomic_load(&pl.rows);
   x->probes += atomic_load(&pl.probes);
   /* the first failed job in job order decides the refusal: the same for every thread count */
-  for (size_t i = 0; i < jl.n && st == STATUS_OK; i++)
-    if (jl.p[i].st != STATUS_OK) {
-      *x->err = jl.p[i].err;
+  for (size_t i = 0; i < jl->n && st == STATUS_OK; i++)
+    if (jl->p[i].st != STATUS_OK) {
+      *x->err = jl->p[i].err;
       st = STATUS_ERR;
     }
   /* a job nobody ran (every worker failed to allocate) leaves st unset: its status is STATUS_OK with an empty buffer, so
      check that every job was taken */
-  if (st == STATUS_OK && atomic_load(&next) < jl.n) st = err_oom(x->err);
-  if (st == STATUS_OK) st = merge(x, &jl, round, new_rows);
-  for (size_t i = 0; i < jl.n; i++) job_free(&jl.p[i]);
-  free(jl.p);
+  if (st == STATUS_OK && atomic_load(&next) < jl->n) st = err_oom(x->err);
+  if (st == STATUS_OK) st = merge(x, jl, round, new_rows);
+  for (size_t i = 0; i < jl->n; i++) job_free(&jl->p[i]);
+  jl->n = 0;
   return st;
 }
 
