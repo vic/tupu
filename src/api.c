@@ -21,8 +21,21 @@ static void report_err(const Err *e, int *err_code, char *err_buf, size_t err_ca
   }
 }
 
-TupuSession *tupu_open(const char *src, size_t len, const char *name, uint64_t budget, size_t nthreads,
-                       char *err_buf, size_t err_cap, int *err_code) {
+static I128 i128_from_tupu(TupuI128 v) {
+  U128 u = ((U128)(uint64_t)v.hi << 64) | (U128)v.lo;
+  return (I128)u;
+}
+
+static TupuI128 tupu_from_i128(I128 v) {
+  U128 u = (U128)v;
+  TupuI128 r;
+  r.lo = (uint64_t)u;
+  r.hi = (int64_t)(uint64_t)(u >> 64);
+  return r;
+}
+
+TupuSession *tupu_open_ex(const char *src, size_t len, const char *name, uint64_t budget, int prov, size_t nthreads,
+                          char *err_buf, size_t err_cap, int *err_code) {
   if (err_code != NULL) *err_code = 0;
   if (err_buf != NULL && err_cap > 0) err_buf[0] = '\0';
   if (src == NULL && len > 0) {
@@ -52,7 +65,7 @@ TupuSession *tupu_open(const char *src, size_t len, const char *name, uint64_t b
   Status st = parse_program(&s->prog, s->src_copy, len, name != NULL ? name : "<memory>", &s->err);
   if (st == STATUS_OK) st = check_program(&s->prog, &s->err);
   if (st == STATUS_OK) {
-    st = engine_open_mem(&s->eng, &s->prog, budget, nthreads, &s->err);
+    st = engine_open(&s->eng, &s->prog, NULL, budget, prov != 0, nthreads, &s->err);
     eng_open = true;
   }
   if (st != STATUS_OK) {
@@ -65,6 +78,16 @@ TupuSession *tupu_open(const char *src, size_t len, const char *name, uint64_t b
   }
   s->ranked_nsyms = s->prog.syms.n;
   return s;
+}
+
+TupuSession *tupu_open(const char *src, size_t len, const char *name, uint64_t budget, size_t nthreads,
+                       char *err_buf, size_t err_cap, int *err_code) {
+  return tupu_open_ex(src, len, name, budget, 0, nthreads, err_buf, err_cap, err_code);
+}
+
+int tupu_last_err_code(const TupuSession *s) {
+  if (s == NULL) return -1;
+  return (int)s->err.code;
 }
 
 void tupu_close(TupuSession *s) {
@@ -118,6 +141,19 @@ int tupu_add_row(TupuSession *s, int rel_id, const int64_t *vals, int ncols) {
   return table_add(t, table_hash_row(t, row), row, ORG_INPUT, 0, 0, NULL, 0, &added, &s->err) == STATUS_OK ? 0 : -1;
 }
 
+int tupu_add_row_i128(TupuSession *s, int rel_id, const TupuI128 *vals, int ncols) {
+  if (s == NULL || rel_id < 0 || (size_t)rel_id >= s->prog.rels.n) return -1;
+  Table *t = &s->eng.tabs[rel_id];
+  if (ncols != t->ncols || (ncols > 0 && vals == NULL)) return -1;
+  I128 *row = s->eng.cells;
+  for (int c = 0; c < ncols; c++) {
+    if (t->kind[c] == BASE_SYMBOL) row[c] = (I128)(uint32_t)vals[c].lo;
+    else row[c] = i128_from_tupu(vals[c]);
+  }
+  bool added = false;
+  return table_add(t, table_hash_row(t, row), row, ORG_INPUT, 0, 0, NULL, 0, &added, &s->err) == STATUS_OK ? 0 : -1;
+}
+
 int tupu_eval(TupuSession *s, int *err_code, char *err_buf, size_t err_cap) {
   if (err_code != NULL) *err_code = 0;
   if (err_buf != NULL && err_cap > 0) err_buf[0] = '\0';
@@ -142,6 +178,17 @@ int tupu_eval(TupuSession *s, int *err_code, char *err_buf, size_t err_cap) {
   return 0;
 }
 
+int tupu_replay(TupuSession *s, int *err_code, char *err_buf, size_t err_cap) {
+  if (err_code != NULL) *err_code = 0;
+  if (err_buf != NULL && err_cap > 0) err_buf[0] = '\0';
+  if (s == NULL) return -1;
+  if (engine_replay(&s->eng, &s->err) != STATUS_OK) {
+    report_err(&s->err, err_code, err_buf, err_cap);
+    return -1;
+  }
+  return 0;
+}
+
 uint32_t tupu_rel_count(const TupuSession *s, int rel_id) {
   if (s == NULL || rel_id < 0 || (size_t)rel_id >= s->prog.rels.n) return 0;
   return s->eng.tabs[rel_id].count;
@@ -154,6 +201,17 @@ int tupu_rel_read_row(const TupuSession *s, int rel_id, uint32_t row, int64_t *o
   for (int c = 0; c < ncols; c++) {
     if (t->kind[c] == BASE_SYMBOL) out_vals[c] = (int64_t)((const uint32_t *)t->col[c])[row];
     else out_vals[c] = (int64_t)((const I128 *)t->col[c])[row];
+  }
+  return 0;
+}
+
+int tupu_rel_read_row_i128(const TupuSession *s, int rel_id, uint32_t row, TupuI128 *out_vals, int ncols) {
+  if (s == NULL || rel_id < 0 || (size_t)rel_id >= s->prog.rels.n) return -1;
+  const Table *t = &s->eng.tabs[rel_id];
+  if (row >= t->count || ncols != t->ncols || (ncols > 0 && out_vals == NULL)) return -1;
+  for (int c = 0; c < ncols; c++) {
+    if (t->kind[c] == BASE_SYMBOL) out_vals[c] = tupu_i128_from_u64(((const uint32_t *)t->col[c])[row]);
+    else out_vals[c] = tupu_from_i128(((const I128 *)t->col[c])[row]);
   }
   return 0;
 }

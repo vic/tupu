@@ -11,6 +11,26 @@ extern "C" {
 
 typedef struct TupuSession TupuSession;
 
+/* Portable C11 exact 128-bit signed integer (two's complement: (hi << 64) | lo). */
+typedef struct {
+  uint64_t lo;
+  int64_t hi;
+} TupuI128;
+
+static inline TupuI128 tupu_i128_from_i64(int64_t v) {
+  TupuI128 r;
+  r.lo = (uint64_t)v;
+  r.hi = v < 0 ? -1 : 0;
+  return r;
+}
+
+static inline TupuI128 tupu_i128_from_u64(uint64_t v) {
+  TupuI128 r;
+  r.lo = v;
+  r.hi = 0;
+  return r;
+}
+
 /* Error codes matching tupu's closed rejection code list. */
 enum {
   TUPU_CODE_USAGE = 0,
@@ -31,7 +51,12 @@ enum {
 
 TupuSession *tupu_open(const char *src, size_t len, const char *name, uint64_t budget, size_t nthreads,
                        char *err_buf, size_t err_cap, int *err_code);
+TupuSession *tupu_open_ex(const char *src, size_t len, const char *name, uint64_t budget, int prov, size_t nthreads,
+                          char *err_buf, size_t err_cap, int *err_code);
 void tupu_close(TupuSession *s);
+
+/* Return last error code recorded on the session. */
+int tupu_last_err_code(const TupuSession *s);
 
 /* Reset all tables, indexes, and counters for the next frame without freeing buffers or restarting the thread pool. */
 int tupu_reset(TupuSession *s);
@@ -44,15 +69,20 @@ int tupu_rel_ncols(const TupuSession *s, int rel_id);
 int tupu_intern(TupuSession *s, const char *str, size_t len, uint32_t *out_id);
 const char *tupu_sym_str(const TupuSession *s, uint32_t id, size_t *out_len);
 
-/* Insert an input row (BASE_SYMBOL cast to uint32_t, BASE_NUMBER cast to I128). Returns 0 on success, -1 on error. */
+/* Insert an input row (BASE_SYMBOL cast to uint32_t, BASE_NUMBER as int64_t or exact 128-bit TupuI128). */
 int tupu_add_row(TupuSession *s, int rel_id, const int64_t *vals, int ncols);
+int tupu_add_row_i128(TupuSession *s, int rel_id, const TupuI128 *vals, int ncols);
 
 /* Evaluate the program against currently loaded rows. Returns 0 on success, -1 on rejection/error. */
 int tupu_eval(TupuSession *s, int *err_code, char *err_buf, size_t err_cap);
 
+/* O6 provenance replay (requires prov != 0 in tupu_open_ex). Returns 0 on success, -1 on mismatch/error. */
+int tupu_replay(TupuSession *s, int *err_code, char *err_buf, size_t err_cap);
+
 /* Read derived/stored rows. */
 uint32_t tupu_rel_count(const TupuSession *s, int rel_id);
 int tupu_rel_read_row(const TupuSession *s, int rel_id, uint32_t row, int64_t *out_vals, int ncols);
+int tupu_rel_read_row_i128(const TupuSession *s, int rel_id, uint32_t row, TupuI128 *out_vals, int ncols);
 
 #ifdef __cplusplus
 }

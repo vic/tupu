@@ -207,11 +207,49 @@ static void test_threads_equal(void) {
   free(r4);
 }
 
+static void test_i128_and_replay(void) {
+  const char *prog =
+      ".decl val(x: number)\n"
+      ".input val\n"
+      ".decl big(x: number)\n"
+      ".output big\n"
+      "big(x + 1) :- val(x).\n";
+  char ebuf[256];
+  int ecode = 0;
+  TupuSession *s = tupu_open_ex(prog, strlen(prog), "i128.dl", 1000, 1, 1,
+                                ebuf, sizeof ebuf, &ecode);
+  check(s != NULL && ecode == 0, "tupu_open_ex with prov=1");
+  if (s == NULL) return;
+  int val_id = tupu_rel_id(s, "val");
+  int big_id = tupu_rel_id(s, "big");
+  check(val_id >= 0 && big_id >= 0, "i128 rel ids found");
+
+  TupuI128 r1[1] = { tupu_i128_from_u64(UINT64_MAX) };
+  TupuI128 r2[1] = { tupu_i128_from_i64(INT64_MIN) };
+  check(tupu_add_row_i128(s, val_id, r1, 1) == 0, "add UINT64_MAX i128");
+  check(tupu_add_row_i128(s, val_id, r2, 1) == 0, "add INT64_MIN i128");
+  check(tupu_eval(s, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "eval i128");
+  check(tupu_rel_count(s, big_id) == 2, "big has 2 rows");
+
+  int saw_2p64 = 0, saw_i64min_p1 = 0;
+  for (uint32_t r = 0; r < tupu_rel_count(s, big_id); r++) {
+    TupuI128 out[1];
+    check(tupu_rel_read_row_i128(s, big_id, r, out, 1) == 0, "read i128 row");
+    if (out[0].hi == 1 && out[0].lo == 0) saw_2p64 = 1;
+    if (out[0].hi == -1 && out[0].lo == (uint64_t)(INT64_MIN + 1)) saw_i64min_p1 = 1;
+  }
+  check(saw_2p64 && saw_i64min_p1, "exact 128-bit UINT64_MAX+1 and INT64_MIN+1 verified");
+  check(tupu_replay(s, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "O6 replay passes");
+  check(tupu_last_err_code(s) == 0, "last_err_code == 0");
+  tupu_close(s);
+}
+
 int main(void) {
   test_1000_frames();
   test_budget_exceeded();
   test_arith_overflow();
   test_threads_equal();
+  test_i128_and_replay();
   printf("api_test failures=%d\n", fails);
   return fails == 0 ? 0 : 1;
 }
