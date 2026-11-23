@@ -488,6 +488,9 @@ void engine_close(Engine *x) {
   free(x->rel_derived);
   free(x->comp_rounds);
   free(x->comp_ns);
+  free(x->rule_probes);
+  free(x->rule_derivations);
+  free(x->rule_ns);
 #endif
   strata_free(&x->strata);
   memset(x, 0, sizeof *x);
@@ -672,7 +675,19 @@ static void run_job(Engine *w, Job *j) {
   w->err = &j->err;
   w->buf = j->buf;
   w->buf.rowbytes = cell_off(&w->tabs[j->v->rule->head.rel], w->tabs[j->v->rule->head.rel].ncols);
+#ifdef TUPU_COUNTERS
+  uint64_t p0 = w->probes, d0 = w->derivations;
+  struct timespec t0;
+  clock_gettime(CLOCK_MONOTONIC, &t0);
+#endif
   j->st = ex_run(w, &j->v->plan, 0, END_HEAD);
+#ifdef TUPU_COUNTERS
+  struct timespec t1;
+  clock_gettime(CLOCK_MONOTONIC, &t1);
+  j->probes = w->probes - p0;
+  j->derivations = w->derivations - d0;
+  j->ns = (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000u + (uint64_t)t1.tv_nsec - (uint64_t)t0.tv_nsec;
+#endif
   j->buf = w->buf;
   free(j->buf.hs); /* F1: the job set is private to the job; the merge dedups across jobs */
   free(j->buf.hu);
@@ -851,7 +866,13 @@ static Status run_round(Engine *x, const Variants *vs, int comp, uint32_t round,
   x->rows_derived += atomic_load(&pl.rows);
   x->probes += atomic_load(&pl.probes);
 #ifdef TUPU_COUNTERS
-  for (size_t i = 0; i < jl->n; i++) x->rel_derived[jl->p[i].v->rule->head.rel] += jl->p[i].buf.n;
+  for (size_t i = 0; i < jl->n; i++) {
+    const Job *j = &jl->p[i];
+    x->rel_derived[j->v->rule->head.rel] += j->buf.n;
+    x->rule_probes[j->v->rule->index] += j->probes;
+    x->rule_derivations[j->v->rule->index] += j->derivations;
+    x->rule_ns[j->v->rule->index] += j->ns;
+  }
 #endif
   /* the first failed job in job order decides the refusal: the same for every thread count */
   for (size_t i = 0; i < jl->n && st == STATUS_OK; i++)
@@ -909,6 +930,13 @@ Status engine_eval(Engine *x, Err *e) {
   free(x->rel_derived);
   free(x->comp_rounds);
   free(x->comp_ns);
+  free(x->rule_probes);
+  free(x->rule_derivations);
+  free(x->rule_ns);
+  x->rule_probes = calloc(p->rules.n + 1, sizeof *x->rule_probes);
+  x->rule_derivations = calloc(p->rules.n + 1, sizeof *x->rule_derivations);
+  x->rule_ns = calloc(p->rules.n + 1, sizeof *x->rule_ns);
+  if (x->rule_probes == NULL || x->rule_derivations == NULL || x->rule_ns == NULL) return err_oom(e);
   x->rel_derived = calloc(n + 1, sizeof *x->rel_derived);
   x->comp_rounds = calloc((size_t)x->strata.ncomps + 1, sizeof *x->comp_rounds);
   x->comp_ns = calloc((size_t)x->strata.ncomps + 1, sizeof *x->comp_ns);
@@ -996,6 +1024,12 @@ void engine_print_counters(const Engine *x) {
   for (int c = 0; c < x->strata.ncomps; c++)
     if (x->comp_rounds[c] > 0)
       (void)fprintf(stderr, "stratum %d rounds=%llu ns=%llu\n", c, (unsigned long long)x->comp_rounds[c], (unsigned long long)x->comp_ns[c]);
+  for (size_t i = 0; i < p->rules.n; i++) {
+    const Rule *r = &p->rules.p[i];
+    (void)fprintf(stderr, "rule %d %s:%ld head=%.*s probes=%llu derivations=%llu ns=%llu\n", r->index, r->file != NULL ? r->file : "-", r->line,
+                  (int)p->rels.p[r->head.rel].name.n, p->rels.p[r->head.rel].name.s, (unsigned long long)x->rule_probes[r->index],
+                  (unsigned long long)x->rule_derivations[r->index], (unsigned long long)x->rule_ns[r->index]);
+  }
 }
 #endif
 

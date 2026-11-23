@@ -36,6 +36,9 @@ typedef struct {
   Err err;
   Status st;
   size_t seq; /* order of completion, used only by the MERGEORDER mutant */
+#ifdef TUPU_COUNTERS
+  uint64_t probes, derivations, ns; /* of this job, folded per rule after the round */
+#endif
 } Job;
 
 typedef struct JobList {
@@ -77,6 +80,7 @@ typedef struct Engine {
 #ifdef TUPU_COUNTERS
   uint64_t *rel_derived;           /* per relation: rows buffered by rule jobs (sums to rows_derived) */
   uint64_t *comp_rounds, *comp_ns; /* per stratum: rounds run and wall ns */
+  uint64_t *rule_probes, *rule_derivations, *rule_ns; /* per rule index: index probes, derivations, summed job wall ns */
 #endif
 } Engine;
 
@@ -89,7 +93,8 @@ void engine_close(Engine *x);
 Status engine_replay(Engine *x, Err *e);
 const Variant *engine_variant_of(const Engine *x, uint32_t rule);
 #ifdef TUPU_COUNTERS
-/* stderr lines `rel NAME rows=N derived=M` (by name) and `stratum I rounds=R ns=T` (by index) */
+/* stderr lines `rel NAME rows=N derived=M` (by name), `stratum I rounds=R ns=T` (by index) and
+   `rule I file:line head=NAME probes=P derivations=D ns=T` (by index; the probes sum to the `counters` probes) */
 void engine_print_counters(const Engine *x);
 #endif
 
