@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef TUPU_COUNTERS
+#include <time.h>
+#endif
 
 static Status arith_err(Engine *x) {
   return err_set(x->err, CODE_DATALOG_ARITH, NULL, 0, "integer overflow or division by zero");
@@ -481,6 +484,11 @@ void engine_close(Engine *x) {
   free(x->cells);
   free(x->body);
   free(x->rr);
+#ifdef TUPU_COUNTERS
+  free(x->rel_derived);
+  free(x->comp_rounds);
+  free(x->comp_ns);
+#endif
   strata_free(&x->strata);
   memset(x, 0, sizeof *x);
 }
@@ -842,6 +850,9 @@ static Status run_round(Engine *x, const Variants *vs, int comp, uint32_t round,
   x->derivations += atomic_load(&pl.derivations);
   x->rows_derived += atomic_load(&pl.rows);
   x->probes += atomic_load(&pl.probes);
+#ifdef TUPU_COUNTERS
+  for (size_t i = 0; i < jl->n; i++) x->rel_derived[jl->p[i].v->rule->head.rel] += jl->p[i].buf.n;
+#endif
   /* the first failed job in job order decides the refusal: the same for every thread count */
   for (size_t i = 0; i < jl->n && st == STATUS_OK; i++)
     if (jl->p[i].st != STATUS_OK) {
@@ -894,6 +905,15 @@ Status engine_eval(Engine *x, Err *e) {
   x->err = e;
   Program *p = x->prog;
   size_t n = p->rels.n;
+#ifdef TUPU_COUNTERS
+  free(x->rel_derived);
+  free(x->comp_rounds);
+  free(x->comp_ns);
+  x->rel_derived = calloc(n + 1, sizeof *x->rel_derived);
+  x->comp_rounds = calloc((size_t)x->strata.ncomps + 1, sizeof *x->comp_rounds);
+  x->comp_ns = calloc((size_t)x->strata.ncomps + 1, sizeof *x->comp_ns);
+  if (x->rel_derived == NULL || x->comp_rounds == NULL || x->comp_ns == NULL) return err_oom(e);
+#endif
   for (int ci = 0; ci < x->strata.ncomps; ci++) {
 #ifdef MUTANT_NEGEARLY
     int comp = x->strata.ncomps - 1 - ci;
@@ -905,6 +925,10 @@ Status engine_eval(Engine *x, Err *e) {
       if (x->naive.p[i].comp == comp) has_rules = true;
     if (!has_rules) continue;
     uint32_t round = 1;
+#ifdef TUPU_COUNTERS
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+#endif
     for (;;) {
       if (sync_indexes(x, comp) != STATUS_OK) return STATUS_ERR;
       /* ranges at the start of the round: delta = rows added by the previous round */
@@ -920,6 +944,9 @@ Status engine_eval(Engine *x, Err *e) {
         return STATUS_ERR;
       }
       x->rounds++;
+#ifdef TUPU_COUNTERS
+      x->comp_rounds[comp]++;
+#endif
       for (size_t r = 0; r < n; r++) x->rr[r].ds = before[r];
       free(before);
       bool recursive = false;
@@ -928,9 +955,49 @@ Status engine_eval(Engine *x, Err *e) {
       if (added == 0 || !recursive) break;
       round++;
     }
+#ifdef TUPU_COUNTERS
+    struct timespec t1;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    x->comp_ns[comp] += (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000u + (uint64_t)t1.tv_nsec - (uint64_t)t0.tv_nsec;
+#endif
   }
   return STATUS_OK;
 }
+
+#ifdef TUPU_COUNTERS
+static int name_lt(const Relation *a, const Relation *b) {
+  size_t m = a->name.n < b->name.n ? a->name.n : b->name.n;
+  int c = memcmp(a->name.s, b->name.s, m);
+  return c != 0 ? c < 0 : a->name.n < b->name.n;
+}
+
+void engine_print_counters(const Engine *x) {
+  const Program *p = x->prog;
+  size_t n = p->rels.n;
+  size_t *ord = malloc((n + 1) * sizeof *ord);
+  if (ord == NULL || x->rel_derived == NULL) {
+    free(ord);
+    return;
+  }
+  for (size_t i = 0; i < n; i++) {
+    size_t j = i;
+    while (j > 0 && name_lt(&p->rels.p[i], &p->rels.p[ord[j - 1]])) {
+      ord[j] = ord[j - 1];
+      j--;
+    }
+    ord[j] = i;
+  }
+  for (size_t k = 0; k < n; k++) {
+    size_t r = ord[k];
+    (void)fprintf(stderr, "rel %.*s rows=%llu derived=%llu\n", (int)p->rels.p[r].name.n, p->rels.p[r].name.s,
+                  (unsigned long long)x->tabs[r].count, (unsigned long long)x->rel_derived[r]);
+  }
+  free(ord);
+  for (int c = 0; c < x->strata.ncomps; c++)
+    if (x->comp_rounds[c] > 0)
+      (void)fprintf(stderr, "stratum %d rounds=%llu ns=%llu\n", c, (unsigned long long)x->comp_rounds[c], (unsigned long long)x->comp_ns[c]);
+}
+#endif
 
 /* ---- O6: provenance replay ---- */
 static const Variant *naive_variant(const Engine *x, uint32_t rule) {

@@ -94,6 +94,7 @@ static Status run(const Args *a, Err *e) {
   if (st == STATUS_OK)
     (void)fprintf(stderr, "counters rounds=%llu derivations=%llu rows=%llu probes=%llu\n", (unsigned long long)eng.rounds,
                   (unsigned long long)eng.derivations, (unsigned long long)eng.rows_derived, (unsigned long long)eng.probes);
+  if (st == STATUS_OK) engine_print_counters(&eng);
 #endif
   if (st == STATUS_OK && a->prov_dir != NULL) st = engine_replay(&eng, e);
   if (st == STATUS_OK) st = out_write(&eng, a->out_target, e);

@@ -74,6 +74,10 @@ typedef struct Engine {
   const uint32_t *target_body;
   bool found;
   uint64_t derivations, rows_derived, probes, rounds; /* counters of the bench (E-performance) */
+#ifdef TUPU_COUNTERS
+  uint64_t *rel_derived;           /* per relation: rows buffered by rule jobs (sums to rows_derived) */
+  uint64_t *comp_rounds, *comp_ns; /* per stratum: rounds run and wall ns */
+#endif
 } Engine;
 
 Status engine_open(Engine *x, Program *p, const char *facts_dir, uint64_t budget, bool prov, size_t nthreads, Err *e);
@@ -84,5 +88,9 @@ void engine_close(Engine *x);
 /* O6: every row of every output relation derives again from its rule and its body rows against the final relations */
 Status engine_replay(Engine *x, Err *e);
 const Variant *engine_variant_of(const Engine *x, uint32_t rule);
+#ifdef TUPU_COUNTERS
+/* stderr lines `rel NAME rows=N derived=M` (by name) and `stratum I rounds=R ns=T` (by index) */
+void engine_print_counters(const Engine *x);
+#endif
 
 #endif
