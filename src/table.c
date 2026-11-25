@@ -78,26 +78,7 @@ Status table_enable_bitset(Table *t, uint32_t nsyms, Err *e) {
   return STATUS_OK;
 }
 
-/* A dedup or lattice map that the cleared contents filled to less than 1/8 is freed, not zeroed: it grows again on
-   demand (dedup_grow and lattice_grow start from capacity 0), so a session reused for many evaluations never pays a
-   full-capacity memset sized by its largest evaluation (the per-reset cost measured in X28-aq). */
-static void table_shrink_maps(Table *t) {
-  if (t->dcap > 4096 && (size_t)t->count * 8 < t->dcap) {
-    free(t->dsl);
-    free(t->dkey);
-    t->dsl = NULL;
-    t->dkey = NULL;
-    t->dcap = 0;
-  }
-  if (t->lcap > 4096 && (size_t)t->lcount * 8 < t->lcap) {
-    free(t->lbest);
-    t->lbest = NULL;
-    t->lcap = 0;
-  }
-}
-
 void table_clear(Table *t) {
-  table_shrink_maps(t);
   t->count = 0;
   t->pool_n = 0;
   if (t->bits != NULL) {
