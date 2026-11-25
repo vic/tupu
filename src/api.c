@@ -77,6 +77,7 @@ TupuSession *tupu_open_ex(const char *src, size_t len, const char *name, uint64_
     return NULL;
   }
   s->ranked_nsyms = s->prog.syms.n;
+  sym_seal(&s->prog.syms); /* the rule program and its facts own these symbols; units come and go */
   return s;
 }
 
@@ -100,7 +101,11 @@ void tupu_close(TupuSession *s) {
 
 int tupu_reset(TupuSession *s) {
   if (s == NULL) return -1;
-  return engine_reset(&s->eng, &s->err) == STATUS_OK ? 0 : -1;
+  if (engine_reset(&s->eng, &s->err) != STATUS_OK) return -1;
+  /* the tables are empty, so no row names an evaluation symbol: drop them, and rank again on the next eval */
+  sym_forget_evaluation(&s->prog.syms);
+  s->ranked_nsyms = UINT32_MAX;
+  return 0;
 }
 
 int tupu_rel_id(const TupuSession *s, const char *name) {

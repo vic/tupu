@@ -58,14 +58,16 @@ void tupu_close(TupuSession *s);
 /* Return last error code recorded on the session. */
 int tupu_last_err_code(const TupuSession *s);
 
-/* Reset all tables, indexes, and counters for the next frame without freeing buffers or restarting the thread pool. */
+/* Reset all tables, indexes, and counters for the next frame without restarting the thread pool. Symbols interned
+   after tupu_open_ex belong to the frame: reset forgets them, so their ids and the strings tupu_sym_str returned for
+   them are not valid after it (the symbols of the program stay). */
 int tupu_reset(TupuSession *s);
 
 /* Relation metadata. tupu_rel_id returns -1 if not found; tupu_rel_ncols returns -1 on invalid rel_id. */
 int tupu_rel_id(const TupuSession *s, const char *name);
 int tupu_rel_ncols(const TupuSession *s, int rel_id);
 
-/* Symbol interning and reverse lookup. */
+/* Symbol interning and reverse lookup (a symbol interned after open lives until the next tupu_reset). */
 int tupu_intern(TupuSession *s, const char *str, size_t len, uint32_t *out_id);
 const char *tupu_sym_str(const TupuSession *s, uint32_t id, size_t *out_len);
 

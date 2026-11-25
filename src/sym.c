@@ -16,6 +16,7 @@ void sym_free(SymTab *s) {
   free(s->slot);
   free(s->used);
   free(s->rank);
+  arena_free(&s->evbytes);
   arena_free(&s->bytes);
   memset(s, 0, sizeof *s);
 }
@@ -66,7 +67,7 @@ Status sym_intern(SymTab *s, const char *p, size_t n, uint32_t *id, Err *e) {
     s->len = nlen;
     s->cap = ncap;
   }
-  char *copy = arena_strndup(&s->bytes, p, n);
+  char *copy = arena_strndup(s->sealed ? &s->evbytes : &s->bytes, p, n);
   if (copy == NULL) return err_oom(e);
   s->str[s->n] = copy;
   s->len[s->n] = (uint32_t)n;
@@ -101,4 +102,27 @@ Status sym_build_rank(SymTab *s, Err *e) {
   for (uint32_t r = 0; r < s->n; r++) s->rank[order[r]] = r;
   free(order);
   return STATUS_OK;
+}
+
+void sym_seal(SymTab *s) {
+  s->base = s->n;
+  s->sealed = true;
+}
+
+/* The hash slots are cleared and the program symbols put back: the cost is the slot capacity, which the largest single
+   evaluation sets (not the history of the session), plus one probe per program symbol. */
+void sym_forget_evaluation(SymTab *s) {
+  if (!s->sealed || s->n == s->base) return;
+#ifdef MUTANT_KEEPSYMS
+  return; /* control: the session keeps its history; api_test must fail */
+#endif
+  s->n = s->base;
+  arena_free(&s->evbytes);
+  memset(s->used, 0, s->scap);
+  for (uint32_t id = 0; id < s->n; id++) {
+    size_t i = hash_bytes(s->str[id], s->len[id]) & (s->scap - 1);
+    while (s->used[i]) i = (i + 1) & (s->scap - 1);
+    s->used[i] = 1;
+    s->slot[i] = id;
+  }
 }

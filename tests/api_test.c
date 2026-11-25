@@ -76,8 +76,19 @@ static void test_1000_frames(void) {
   clock_gettime(CLOCK_MONOTONIC, &t0);
   long rss_f10 = -1, rss_f1000 = -1;
 
+  uint32_t frame_first_id = 0;
   for (int frame = 1; frame <= 1000; frame++) {
     check(tupu_reset(s) == 0, "tupu_reset");
+    /* a frame interns its own symbols: reset forgot the ones of the frame before, so the ids start at the same place
+       every frame (the session does not grow with its history) and an id of the frame before resolves to nothing */
+    if (frame > 1) check(tupu_sym_str(s, sym[9], NULL) == NULL, "reset forgets the symbols of the frame before");
+    for (int i = 0; i < 10; i++) {
+      char buf[16];
+      int n = snprintf(buf, sizeof buf, "f%d_n%d", frame, i);
+      check(tupu_intern(s, buf, (size_t)n, &sym[i]) == 0, "tupu_intern in frame");
+    }
+    if (frame == 1) frame_first_id = sym[0];
+    check(sym[0] == frame_first_id, "frame symbols take the same ids every frame");
     for (int i = 0; i < 9; i++) {
       int64_t row[2] = { (int64_t)sym[i], (int64_t)sym[i + 1] };
       check(tupu_add_row(s, edge_id, row, 2) == 0, "tupu_add_row");
