@@ -246,26 +246,70 @@ static Status check_rule_types(Program *p, const Rule *r, Err *e) {
 
 /* ---- lattice relations (subsumption) ----
    A lattice relation keeps one best row per key (the other columns): the largest or the smallest value of its lattice
-   column. The table keeps only rows that improved the best of their key when they were derived, so a reader must give
-   the same result from the improving rows as from all rows; tupu admits exactly the readers for which that holds:
-   (1) a rule of the relation itself whose body reads it once, where the lattice variable occurs only in the head's
-       lattice column, inside a non-decreasing expression (x, x + e, e + x, x - e with e free of x); the best of every
-       key is then the best over all derivations, whatever the order (monotone fixpoint, Tarski 1955);
-   (2) an aggregate of the same direction (max for a largest-kept relation, min for a smallest-kept one) whose body is
-       that one atom and whose value is its lattice variable: the best row is in the table, so the aggregate is exact.
-   Negation, count, sum, any other reader, and .output of a lattice relation are refused (fail closed). */
+   column. The table keeps only rows that improved the best of their key when they were derived; a dominated row
+   (a worse value for a key that has a better one) may be missing. tupu admits a rule only when such a row can
+   change nothing:
+   - a lattice variable is the variable at the lattice column of a positive body atom of a lattice relation; it is
+     "better" upward for a largest-kept relation and downward for a smallest-kept one;
+   - a lattice variable stands nowhere else in any atom (no join, no key, no negation) and in no aggregate;
+   - every comparison stays true when every lattice variable moves to a better value (polarity of left - right);
+     = and != on a lattice variable are refused;
+   - a head of a non-lattice relation holds no lattice variable; the lattice column of a lattice head moves to a
+     better value of the head relation, or stays, when every lattice variable moves to a better value; its key
+     columns hold no lattice variable;
+   - an aggregate over a lattice relation is max (largest-kept) or min (smallest-kept) of the lattice column over that
+     one atom; negation, count and sum over a lattice relation, and its .output, are refused.
+   Then every derivation over all rows is matched by a derivation over the kept rows whose lattice inputs are at
+   least as good: the non-lattice relations are equal and every key keeps the best value of all rows (monotone
+   fixpoint over a lattice, Tarski 1955; the same argument as Flix, Madsen et al. PLDI 2016). */
+typedef enum { POL_ZERO, POL_UP, POL_DOWN, POL_ANY } Pol;
+
 static bool expr_uses(const Expr *x, int var) {
   if (x == NULL) return false;
   if (x->kind == EX_VAR) return x->var == var;
   return expr_uses(x->a, var) || expr_uses(x->b, var);
 }
 
-static bool expr_nondecreasing(const Expr *x, int var) {
-  if (x->kind == EX_VAR) return x->var == var;
-  if (x->kind != EX_BIN) return false;
-  if (x->op == OP_ADD)
-    return (expr_nondecreasing(x->a, var) && !expr_uses(x->b, var)) || (expr_nondecreasing(x->b, var) && !expr_uses(x->a, var));
-  if (x->op == OP_SUB) return expr_nondecreasing(x->a, var) && !expr_uses(x->b, var);
+static Pol pol_flip(Pol p) { return p == POL_UP ? POL_DOWN : (p == POL_DOWN ? POL_UP : p); }
+
+static Pol pol_add(Pol a, Pol b) {
+  if (a == POL_ZERO) return b;
+  if (b == POL_ZERO) return a;
+  return a == b ? a : POL_ANY;
+}
+
+/* how x moves when var moves up */
+static Pol expr_pol(const Expr *x, int var) {
+  switch (x->kind) {
+  case EX_VAR: return x->var == var ? POL_UP : POL_ZERO;
+  case EX_NUM:
+  case EX_SYM:
+  case EX_WILD: return POL_ZERO;
+  case EX_NEG: return pol_flip(expr_pol(x->a, var));
+  case EX_BIN:
+    if (x->op == OP_ADD) return pol_add(expr_pol(x->a, var), expr_pol(x->b, var));
+    if (x->op == OP_SUB) return pol_add(expr_pol(x->a, var), pol_flip(expr_pol(x->b, var)));
+    return expr_uses(x, var) ? POL_ANY : POL_ZERO;
+  case EX_FN: /* max and min are non-decreasing in both arguments; ord is not monotone */
+    if (x->fn == FN_MAX || x->fn == FN_MIN) return pol_add(expr_pol(x->a, var), expr_pol(x->b, var));
+    return expr_uses(x, var) ? POL_ANY : POL_ZERO;
+  }
+  return POL_ANY;
+}
+
+/* two structurally equal expressions: their comparison does not depend on any value */
+static bool expr_same(const Expr *a, const Expr *b) {
+  if (a == NULL || b == NULL) return a == b;
+  if (a->kind != b->kind) return false;
+  switch (a->kind) {
+  case EX_NUM: return a->num == b->num;
+  case EX_SYM: return a->sym == b->sym;
+  case EX_VAR: return a->var == b->var;
+  case EX_WILD: return false;
+  case EX_NEG: return expr_same(a->a, b->a);
+  case EX_BIN: return a->op == b->op && expr_same(a->a, b->a) && expr_same(a->b, b->b);
+  case EX_FN: return a->fn == b->fn && expr_same(a->a, b->a) && expr_same(a->b, b->b);
+  }
   return false;
 }
 
@@ -274,15 +318,24 @@ static Status lattice_refuse(const Program *p, const Rule *r, int rel, const cha
   return err_set(e, CODE_PARSE, r->file, r->line, "lattice relation %.*s: %s", (int)R->name.n, R->name.s, why);
 }
 
+typedef struct {
+  int var;
+  Pol better; /* POL_UP or POL_DOWN */
+  int rel;
+  const Lit *at;
+} LatVar;
+
 static Status check_lattice_rule(const Program *p, const Rule *r, Err *e) {
-  int self_reads = 0;
+  LatVar lv[r->nlits + 1]; /* one entry per body literal at most */
+  int nlv = 0;
   for (int k = 0; k < r->nlits; k++) {
     const Lit *l = r->lits[k];
     if ((l->kind == LIT_POS || l->kind == LIT_NEG) && p->rels.p[l->atom.rel].lat_col >= 0) {
-      int rel = l->atom.rel;
-      if (l->kind == LIT_NEG) return lattice_refuse(p, r, rel, "read under negation", e);
-      if (rel != r->head.rel) return lattice_refuse(p, r, rel, "read by another relation outside an aggregate", e);
-      self_reads++;
+      const Relation *R = &p->rels.p[l->atom.rel];
+      if (l->kind == LIT_NEG) return lattice_refuse(p, r, l->atom.rel, "read under negation", e);
+      const Expr *x = l->atom.args[R->lat_col];
+      if (x->kind != EX_VAR) return lattice_refuse(p, r, l->atom.rel, "the lattice column of a body atom must be a variable", e);
+      lv[nlv++] = (LatVar){x->var, R->lat_max ? POL_UP : POL_DOWN, l->atom.rel, l};
     } else if (l->kind == LIT_AGG) {
       for (int b = 0; b < l->nbody; b++) {
         const Lit *a = l->body[b];
@@ -290,45 +343,61 @@ static Status check_lattice_rule(const Program *p, const Rule *r, Err *e) {
         const Relation *R = &p->rels.p[a->atom.rel];
         if (R->lat_col < 0) continue;
         bool same_dir = (l->agg == AGG_MAX && R->lat_max) || (l->agg == AGG_MIN && !R->lat_max);
-        const Expr *lv = a->atom.args[R->lat_col];
+        const Expr *v = a->atom.args[R->lat_col];
         if (a->kind == LIT_NEG || !same_dir || l->nbody != 1 || l->aggexpr == NULL || l->aggexpr->kind != EX_VAR ||
-            lv->kind != EX_VAR || l->aggexpr->var != lv->var)
+            v->kind != EX_VAR || l->aggexpr->var != v->var)
           return lattice_refuse(p, r, a->atom.rel, "an aggregate must be max (or min) of the lattice column over that one atom", e);
       }
     }
   }
-  if (self_reads == 0) return STATUS_OK;
-  if (self_reads > 1) return lattice_refuse(p, r, r->head.rel, "a rule reads its own lattice relation twice", e);
-  const Relation *H = &p->rels.p[r->head.rel];
-  int lvar = -1;
-  for (int k = 0; k < r->nlits; k++) {
-    const Lit *l = r->lits[k];
-    if (l->kind == LIT_POS && l->atom.rel == r->head.rel) {
-      const Expr *x = l->atom.args[H->lat_col];
-      if (x->kind != EX_VAR) return lattice_refuse(p, r, r->head.rel, "the lattice column of the body atom must be a variable", e);
-      lvar = x->var;
-      for (int c = 0; c < l->atom.nargs; c++)
-        if (c != H->lat_col && expr_uses(l->atom.args[c], lvar))
-          return lattice_refuse(p, r, r->head.rel, "the lattice variable is used in a key column", e);
+  for (int i = 0; i < nlv; i++) {
+    int var = lv[i].var;
+    for (int k = 0; k < r->nlits; k++) {
+      const Lit *l = r->lits[k];
+      if (l->kind == LIT_POS || l->kind == LIT_NEG) {
+        const Relation *R = &p->rels.p[l->atom.rel];
+        for (int c = 0; c < l->atom.nargs; c++) {
+          if (l == lv[i].at && c == R->lat_col) continue;
+          if (expr_uses(l->atom.args[c], var)) return lattice_refuse(p, r, lv[i].rel, "a lattice variable is joined or used as a key", e);
+        }
+      } else if (l->kind == LIT_AGG) {
+        bool uses = expr_uses(l->l, var) || expr_uses(l->aggexpr, var);
+        for (int b = 0; b < l->nbody && !uses; b++) {
+          const Lit *a = l->body[b];
+          if (a->kind == LIT_POS || a->kind == LIT_NEG)
+            for (int c = 0; c < a->atom.nargs; c++) uses = uses || expr_uses(a->atom.args[c], var);
+          else if (a->kind == LIT_CMP)
+            uses = uses || expr_uses(a->l, var) || expr_uses(a->r, var);
+        }
+        if (uses) return lattice_refuse(p, r, lv[i].rel, "a lattice variable is used in an aggregate", e);
+      } else if (l->kind == LIT_CMP) {
+        if (expr_same(l->l, l->r)) continue; /* a placeholder like x = x: constant truth */
+        Pol d = pol_add(expr_pol(l->l, var), pol_flip(expr_pol(l->r, var))); /* how left - right moves as var moves up */
+        if (lv[i].better == POL_DOWN) d = pol_flip(d);                         /* ... as var moves to a better value */
+        bool keeps;
+        switch (l->cmp) {
+        case CMP_LT:
+        case CMP_LE: keeps = d == POL_ZERO || d == POL_DOWN; break;
+        case CMP_GT:
+        case CMP_GE: keeps = d == POL_ZERO || d == POL_UP; break;
+        default: keeps = d == POL_ZERO; break;
+        }
+        if (!keeps) return lattice_refuse(p, r, lv[i].rel, "a comparison may turn false when a lattice value improves", e);
+      }
     }
-  }
-  for (int k = 0; k < r->nlits; k++) {
-    const Lit *l = r->lits[k];
-    if (l->kind == LIT_POS && l->atom.rel == r->head.rel) continue;
-    bool uses = false;
-    if (l->kind == LIT_POS || l->kind == LIT_NEG) {
-      for (int c = 0; c < l->atom.nargs; c++) uses = uses || expr_uses(l->atom.args[c], lvar);
-    } else if (l->kind == LIT_CMP) {
-      uses = expr_uses(l->l, lvar) || expr_uses(l->r, lvar);
-    } else {
-      uses = true; /* an aggregate beside a lattice self read is refused */
+    const Relation *H = &p->rels.p[r->head.rel];
+    for (int c = 0; c < r->head.nargs; c++) {
+      const Expr *x = r->head.args[c];
+      if (H->lat_col == c) {
+        Pol d = expr_pol(x, var);
+        if (lv[i].better == POL_DOWN) d = pol_flip(d);
+        Pol want = H->lat_max ? POL_UP : POL_DOWN;
+        if (d != POL_ZERO && d != want)
+          return lattice_refuse(p, r, lv[i].rel, "the head's lattice value must improve or stay when a lattice value improves", e);
+      } else if (expr_uses(x, var)) {
+        return lattice_refuse(p, r, lv[i].rel, "a lattice variable stands in a head key or a non-lattice head", e);
+      }
     }
-    if (uses) return lattice_refuse(p, r, r->head.rel, "the lattice variable is read outside the head's lattice column", e);
-  }
-  for (int c = 0; c < r->head.nargs; c++) {
-    const Expr *x = r->head.args[c];
-    if (c == H->lat_col ? !expr_nondecreasing(x, lvar) : expr_uses(x, lvar))
-      return lattice_refuse(p, r, r->head.rel, "the head's lattice column must be non-decreasing in the lattice variable", e);
   }
   return STATUS_OK;
 }

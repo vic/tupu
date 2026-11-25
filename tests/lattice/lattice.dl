@@ -11,3 +11,9 @@ path(r, k, a) <= path(r, k, b) :- a <= b.
 .decl longest(r: symbol, k: symbol, c: number)
 longest(r, k, n) :- root(r), cost(k, _), n = max c : { path(r, k, c) }.
 .output longest
+.decl far(r: symbol, k: symbol)
+far(r, k) :- path(r, k, c), c >= 60.
+.output far
+.decl capped(r: symbol, k: symbol, c: number)
+capped(r, k, c) :- root(r), cost(k, _), c = max v : { path(r, k, v) }, c <= 40.
+.output capped
