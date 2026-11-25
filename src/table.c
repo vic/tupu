@@ -78,13 +78,28 @@ Status table_enable_bitset(Table *t, uint32_t nsyms, Err *e) {
   return STATUS_OK;
 }
 
+/* The cost of a clear follows the rows the table held, not the capacity it grew to: every set bit of the dedup bit
+   matrix is a row of the table (table_add sets it, table_enable_bitset rebuilds the bits from the rows), and every entry
+   of a direct index is the symbol of a synced row; so those are cleared row by row (X28-bb: whole-matrix memsets were
+   40 GB per load of the stable tree). */
 void table_clear(Table *t) {
+  if (t->bits != NULL && t->count > 0) {
+    const uint32_t *c0 = (const uint32_t *)t->col[0];
+    const uint32_t *c1 = (const uint32_t *)t->col[1];
+#ifdef MUTANT_CLEARROWS
+    for (uint32_t r = 1; r < t->count; r++) t->bits[c0[r]][c1[r] >> 6] = 0; /* control: one row's bit stays */
+#else
+    for (uint32_t r = 0; r < t->count; r++) t->bits[c0[r]][c1[r] >> 6] = 0;
+#endif
+  }
+  for (int i = 0; i < t->nidx; i++) {
+    Index *ix = t->idx[i];
+    if (ix->direct == NULL || ix->synced == 0) continue;
+    const uint32_t *colp = (const uint32_t *)t->col[ix->cols[0]];
+    for (uint32_t r = 0; r < ix->synced; r++) ix->direct[colp[r]] = UINT32_MAX;
+  }
   t->count = 0;
   t->pool_n = 0;
-  if (t->bits != NULL) {
-    for (uint32_t i = 0; i < t->bit_nsyms; i++)
-      if (t->bits[i] != NULL) memset(t->bits[i], 0, (size_t)t->bit_words * sizeof(uint64_t));
-  }
   if (t->dkey != NULL && t->dcap > 0) memset(t->dkey, 0xFF, t->dcap * sizeof *t->dkey);
   if (t->dsl != NULL && t->dcap > 0) memset(t->dsl, 0, t->dcap * sizeof *t->dsl);
   for (int i = 0; i < t->nidx; i++) {
@@ -93,7 +108,6 @@ void table_clear(Table *t) {
     ix->nbk = 0;
     ix->synced = 0;
     if (ix->used != NULL && ix->scap > 0) memset(ix->used, 0, ix->scap);
-    if (ix->direct != NULL && ix->dircap > 0) memset(ix->direct, 0xFF, ix->dircap * sizeof *ix->direct);
   }
   if (t->lbest != NULL && t->lcap > 0) memset(t->lbest, 0, t->lcap * sizeof *t->lbest);
   t->lcount = 0;
