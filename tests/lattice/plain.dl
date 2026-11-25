@@ -1,0 +1,12 @@
+.decl edge(a: symbol, b: symbol)
+.decl cost(a: symbol, c: number)
+.decl root(a: symbol)
+.input edge
+.input cost
+.input root
+.decl path(r: symbol, k: symbol, c: number)
+path(r, r, c) :- root(r), cost(r, c).
+path(r, b, c + x) :- path(r, a, c), edge(a, b), cost(b, x).
+.decl longest(r: symbol, k: symbol, c: number)
+longest(r, k, n) :- root(r), cost(k, _), n = max c : { path(r, k, c) }.
+.output longest

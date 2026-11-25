@@ -14,6 +14,14 @@ Status table_init(Table *t, const Relation *r, bool want_prov, Err *e) {
   t->want_prov = want_prov;
   t->fast1 = (r->ncols == 1 && r->colkind[0] == BASE_SYMBOL);
   t->fast2 = (r->ncols == 2 && r->colkind[0] == BASE_SYMBOL && r->colkind[1] == BASE_SYMBOL);
+  t->lat_col = r->lat_col;
+  t->lat_max = r->lat_max;
+  if (t->lat_col >= 0) {
+    t->lkcols = malloc(((size_t)r->ncols + 1) * sizeof *t->lkcols);
+    if (t->lkcols == NULL) return err_oom(e);
+    for (int c = 0; c < r->ncols; c++)
+      if (c != t->lat_col) t->lkcols[t->nlk++] = (uint32_t)c;
+  }
   return STATUS_OK;
 }
 
@@ -70,7 +78,26 @@ Status table_enable_bitset(Table *t, uint32_t nsyms, Err *e) {
   return STATUS_OK;
 }
 
+/* A dedup or lattice map that the cleared contents filled to less than 1/8 is freed, not zeroed: it grows again on
+   demand (dedup_grow and lattice_grow start from capacity 0), so a session reused for many evaluations never pays a
+   full-capacity memset sized by its largest evaluation (the per-reset cost measured in X28-aq). */
+static void table_shrink_maps(Table *t) {
+  if (t->dcap > 4096 && (size_t)t->count * 8 < t->dcap) {
+    free(t->dsl);
+    free(t->dkey);
+    t->dsl = NULL;
+    t->dkey = NULL;
+    t->dcap = 0;
+  }
+  if (t->lcap > 4096 && (size_t)t->lcount * 8 < t->lcap) {
+    free(t->lbest);
+    t->lbest = NULL;
+    t->lcap = 0;
+  }
+}
+
 void table_clear(Table *t) {
+  table_shrink_maps(t);
   t->count = 0;
   t->pool_n = 0;
   if (t->bits != NULL) {
@@ -87,10 +114,14 @@ void table_clear(Table *t) {
     if (ix->used != NULL && ix->scap > 0) memset(ix->used, 0, ix->scap);
     if (ix->direct != NULL && ix->dircap > 0) memset(ix->direct, 0xFF, ix->dircap * sizeof *ix->direct);
   }
+  if (t->lbest != NULL && t->lcap > 0) memset(t->lbest, 0, t->lcap * sizeof *t->lbest);
+  t->lcount = 0;
 }
 
 void table_free(Table *t) {
   for (int c = 0; c < t->ncols && t->col != NULL; c++) free(t->col[c]);
+  free(t->lkcols);
+  free(t->lbest);
   free(t->col);
   free(t->kind);
   free(t->org_kind);
@@ -257,9 +288,60 @@ bool table_contains(const Table *t, const I128 *vals) {
   return table_contains_h(t, h, vals);
 }
 
+static bool lattice_key_equals(const Table *t, uint32_t row, const I128 *vals) {
+  for (uint32_t k = 0; k < t->nlk; k++)
+    if (tcell(t, (int)t->lkcols[k], row) != vals[t->lkcols[k]]) return false;
+  return true;
+}
+
+static Status lattice_grow(Table *t, Err *e) {
+  size_t ncap = t->lcap == 0 ? 64 : t->lcap * 2;
+  uint32_t *nb = calloc(ncap, sizeof *nb);
+  I128 *vals = malloc(((size_t)t->ncols + 1) * sizeof *vals);
+  if (nb == NULL || vals == NULL) {
+    free(nb);
+    free(vals);
+    return err_oom(e);
+  }
+  for (size_t s = 0; s < t->lcap; s++) {
+    if (t->lbest[s] == 0) continue;
+    uint32_t row = t->lbest[s] - 1;
+    for (uint32_t k = 0; k < t->nlk; k++) vals[t->lkcols[k]] = tcell(t, (int)t->lkcols[k], row);
+    size_t j = hash_cells(t, t->lkcols, t->nlk, vals) & (ncap - 1);
+    while (nb[j] != 0) j = (j + 1) & (ncap - 1);
+    nb[j] = t->lbest[s];
+  }
+  free(vals);
+  free(t->lbest);
+  t->lbest = nb;
+  t->lcap = ncap;
+  return STATUS_OK;
+}
+
 Status table_add(Table *t, uint64_t h, const I128 *vals, Origin org, uint32_t ref, uint32_t round, const uint32_t *body, int nbody,
                  bool *added, Err *e) {
   *added = false;
+  size_t li = 0;
+  bool lnew = false;
+  if (t->lat_col >= 0) { /* subsumption: a row that does not improve the best of its key is not added */
+    if ((size_t)(t->lcount + 1) * 2 > t->lcap && lattice_grow(t, e) != STATUS_OK) return STATUS_ERR;
+    li = hash_cells(t, t->lkcols, t->nlk, vals) & (t->lcap - 1);
+    lnew = true;
+    while (t->lbest[li] != 0) {
+      uint32_t b = t->lbest[li] - 1;
+      if (lattice_key_equals(t, b, vals)) {
+        I128 old = tcell(t, t->lat_col, b), now = vals[t->lat_col];
+#ifdef MUTANT_LATTICEDIR
+        if (!(t->lat_max ? now < old : now > old)) return STATUS_OK;
+#else
+        if (!(t->lat_max ? now > old : now < old)) return STATUS_OK;
+#endif
+        lnew = false;
+        break;
+      }
+      li = (li + 1) & (t->lcap - 1);
+    }
+  }
   size_t i = 0;
   uint64_t fkey = 0;
   uint32_t bv0 = 0, bv1 = 0;
@@ -332,6 +414,10 @@ Status table_add(Table *t, uint64_t h, const I128 *vals, Origin org, uint32_t re
     t->dsl[i].used = 1;
     t->dsl[i].tag = hash_tag(h);
     t->dsl[i].row = row;
+  }
+  if (t->lat_col >= 0) {
+    t->lbest[li] = row + 1;
+    if (lnew) t->lcount++;
   }
   t->count++;
   *added = true;

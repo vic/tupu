@@ -244,6 +244,113 @@ static Status check_rule_types(Program *p, const Rule *r, Err *e) {
   return STATUS_OK;
 }
 
+/* ---- lattice relations (subsumption) ----
+   A lattice relation keeps one best row per key (the other columns): the largest or the smallest value of its lattice
+   column. The table keeps only rows that improved the best of their key when they were derived, so a reader must give
+   the same result from the improving rows as from all rows; tupu admits exactly the readers for which that holds:
+   (1) a rule of the relation itself whose body reads it once, where the lattice variable occurs only in the head's
+       lattice column, inside a non-decreasing expression (x, x + e, e + x, x - e with e free of x); the best of every
+       key is then the best over all derivations, whatever the order (monotone fixpoint, Tarski 1955);
+   (2) an aggregate of the same direction (max for a largest-kept relation, min for a smallest-kept one) whose body is
+       that one atom and whose value is its lattice variable: the best row is in the table, so the aggregate is exact.
+   Negation, count, sum, any other reader, and .output of a lattice relation are refused (fail closed). */
+static bool expr_uses(const Expr *x, int var) {
+  if (x == NULL) return false;
+  if (x->kind == EX_VAR) return x->var == var;
+  return expr_uses(x->a, var) || expr_uses(x->b, var);
+}
+
+static bool expr_nondecreasing(const Expr *x, int var) {
+  if (x->kind == EX_VAR) return x->var == var;
+  if (x->kind != EX_BIN) return false;
+  if (x->op == OP_ADD)
+    return (expr_nondecreasing(x->a, var) && !expr_uses(x->b, var)) || (expr_nondecreasing(x->b, var) && !expr_uses(x->a, var));
+  if (x->op == OP_SUB) return expr_nondecreasing(x->a, var) && !expr_uses(x->b, var);
+  return false;
+}
+
+static Status lattice_refuse(const Program *p, const Rule *r, int rel, const char *why, Err *e) {
+  const Relation *R = &p->rels.p[rel];
+  return err_set(e, CODE_PARSE, r->file, r->line, "lattice relation %.*s: %s", (int)R->name.n, R->name.s, why);
+}
+
+static Status check_lattice_rule(const Program *p, const Rule *r, Err *e) {
+  int self_reads = 0;
+  for (int k = 0; k < r->nlits; k++) {
+    const Lit *l = r->lits[k];
+    if ((l->kind == LIT_POS || l->kind == LIT_NEG) && p->rels.p[l->atom.rel].lat_col >= 0) {
+      int rel = l->atom.rel;
+      if (l->kind == LIT_NEG) return lattice_refuse(p, r, rel, "read under negation", e);
+      if (rel != r->head.rel) return lattice_refuse(p, r, rel, "read by another relation outside an aggregate", e);
+      self_reads++;
+    } else if (l->kind == LIT_AGG) {
+      for (int b = 0; b < l->nbody; b++) {
+        const Lit *a = l->body[b];
+        if (a->kind != LIT_POS && a->kind != LIT_NEG) continue;
+        const Relation *R = &p->rels.p[a->atom.rel];
+        if (R->lat_col < 0) continue;
+        bool same_dir = (l->agg == AGG_MAX && R->lat_max) || (l->agg == AGG_MIN && !R->lat_max);
+        const Expr *lv = a->atom.args[R->lat_col];
+        if (a->kind == LIT_NEG || !same_dir || l->nbody != 1 || l->aggexpr == NULL || l->aggexpr->kind != EX_VAR ||
+            lv->kind != EX_VAR || l->aggexpr->var != lv->var)
+          return lattice_refuse(p, r, a->atom.rel, "an aggregate must be max (or min) of the lattice column over that one atom", e);
+      }
+    }
+  }
+  if (self_reads == 0) return STATUS_OK;
+  if (self_reads > 1) return lattice_refuse(p, r, r->head.rel, "a rule reads its own lattice relation twice", e);
+  const Relation *H = &p->rels.p[r->head.rel];
+  int lvar = -1;
+  for (int k = 0; k < r->nlits; k++) {
+    const Lit *l = r->lits[k];
+    if (l->kind == LIT_POS && l->atom.rel == r->head.rel) {
+      const Expr *x = l->atom.args[H->lat_col];
+      if (x->kind != EX_VAR) return lattice_refuse(p, r, r->head.rel, "the lattice column of the body atom must be a variable", e);
+      lvar = x->var;
+      for (int c = 0; c < l->atom.nargs; c++)
+        if (c != H->lat_col && expr_uses(l->atom.args[c], lvar))
+          return lattice_refuse(p, r, r->head.rel, "the lattice variable is used in a key column", e);
+    }
+  }
+  for (int k = 0; k < r->nlits; k++) {
+    const Lit *l = r->lits[k];
+    if (l->kind == LIT_POS && l->atom.rel == r->head.rel) continue;
+    bool uses = false;
+    if (l->kind == LIT_POS || l->kind == LIT_NEG) {
+      for (int c = 0; c < l->atom.nargs; c++) uses = uses || expr_uses(l->atom.args[c], lvar);
+    } else if (l->kind == LIT_CMP) {
+      uses = expr_uses(l->l, lvar) || expr_uses(l->r, lvar);
+    } else {
+      uses = true; /* an aggregate beside a lattice self read is refused */
+    }
+    if (uses) return lattice_refuse(p, r, r->head.rel, "the lattice variable is read outside the head's lattice column", e);
+  }
+  for (int c = 0; c < r->head.nargs; c++) {
+    const Expr *x = r->head.args[c];
+    if (c == H->lat_col ? !expr_nondecreasing(x, lvar) : expr_uses(x, lvar))
+      return lattice_refuse(p, r, r->head.rel, "the head's lattice column must be non-decreasing in the lattice variable", e);
+  }
+  return STATUS_OK;
+}
+
+static Status check_lattices(Program *p, Err *e) {
+  for (size_t i = 0; i < p->subsumes.n; i++) {
+    const Subsume *s = &p->subsumes.p[i];
+    int rel = find_rel(p, s->rel);
+    if (rel < 0) return err_set(e, CODE_UNRESOLVED_NAME, s->file, s->line, "subsumption of unknown relation %.*s", (int)s->rel.n, s->rel.s);
+    Relation *R = &p->rels.p[rel];
+    if (R->ncols != s->ncols) return err_set(e, CODE_RELATION_ARITY, s->file, s->line, "subsumption arity differs from the declaration");
+    if (R->lat_col >= 0) return err_set(e, CODE_PARSE, s->file, s->line, "a second subsumption of %.*s", (int)R->name.n, R->name.s);
+    if (R->colkind[s->col] != BASE_NUMBER) return err_set(e, CODE_TYPE_MISMATCH, s->file, s->line, "the lattice column must be a number");
+    if (R->is_output) return err_set(e, CODE_PARSE, s->file, s->line, "a lattice relation cannot be an .output");
+    R->lat_col = s->col;
+    R->lat_max = s->keep_max;
+  }
+  for (size_t i = 0; i < p->rules.n; i++)
+    if (check_lattice_rule(p, &p->rules.p[i], e) != STATUS_OK) return STATUS_ERR;
+  return STATUS_OK;
+}
+
 Status check_program(Program *p, Err *e) {
   if (build_types(p, e) != STATUS_OK) return STATUS_ERR;
   for (size_t i = 0; i < p->rels.n; i++) {
@@ -298,7 +405,7 @@ Status check_program(Program *p, Err *e) {
   }
   for (size_t i = 0; i < p->rules.n; i++)
     if (check_rule_types(p, &p->rules.p[i], e) != STATUS_OK) return STATUS_ERR;
-  return STATUS_OK;
+  return check_lattices(p, e);
 }
 
 /* ---- stratification: iterative Tarjan over the relation dependency graph (head -> body relation) ---- */

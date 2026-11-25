@@ -25,7 +25,7 @@ Facts are tab-separated files, one per `.input` relation, named `relation.facts`
 
 ## What it reads
 
-Typed `.decl` relations with `symbol` and `number` columns, subtypes and unions, `.input` and `.output`, facts written in the program, and rules with negation, comparisons, arithmetic, `;` and the aggregates `count`, `sum`, `min` and `max`. Components, `.init`, subsumption, records, floats and string functions are not supported: tupu refuses a program that uses them rather than run part of it.
+Typed `.decl` relations with `symbol` and `number` columns, subtypes and unions, `.input` and `.output`, facts written in the program, and rules with negation, comparisons, arithmetic, `;` and the aggregates `count`, `sum`, `min` and `max`, and one subsumption form: `R(k.., a) <= R(k.., b) :- a <= b.` (or `b <= a`) makes R a lattice relation that keeps the best value of one number column per key; tupu refuses every reader that could see a dominated row (negation, `count`, `sum`, a reader in another relation outside a same-direction `max`/`min`, a self rule that is not non-decreasing in that column, `.output`). Components, `.init`, other subsumption forms, records, floats and string functions are not supported: tupu refuses a program that uses them rather than run part of it.
 
 ## C library
 

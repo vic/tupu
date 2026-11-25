@@ -59,6 +59,13 @@ typedef struct {
   size_t *poff; /* per row: offset of its body row ids in pool */
   uint32_t *pool;
   size_t pool_n, pool_cap;
+  int lat_col;       /* -1, or the lattice column: the table keeps only rows that improve the best of their key */
+  bool lat_max;      /* the best is the largest value, else the smallest */
+  uint32_t *lkcols;  /* the key columns (all but lat_col), ascending */
+  uint32_t nlk;
+  uint32_t *lbest;   /* open addressing over the key: 1 + the row id of the best row of a key, 0 = empty */
+  size_t lcap;
+  uint32_t lcount;   /* keys held */
 } Table;
 
 static inline I128 tcell(const Table *t, int c, uint32_t row) {

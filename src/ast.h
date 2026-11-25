@@ -83,7 +83,19 @@ typedef struct {
   Base *colkind;
   bool is_input, is_output;
   int comp;
+  int lat_col;  /* -1, or the column a subsumption declaration orders (filled by check.c) */
+  bool lat_max; /* keep the largest value of lat_col per key, else the smallest */
 } Relation;
+
+/* a subsumption declaration R(k.., a) <= R(k.., b) :- a <= b (keep max) or :- b <= a (keep min), already checked for shape */
+typedef struct {
+  Name rel;
+  const char *file;
+  long line;
+  int ncols;
+  int col;
+  bool keep_max;
+} Subsume;
 
 typedef enum { TD_SUBTYPE, TD_UNION } TypeDefKind;
 typedef struct {
@@ -112,6 +124,7 @@ typedef struct {
   struct { Mention *p; size_t n, cap; } inputs, outputs;
   struct { Rule *p; size_t n, cap; } rules;
   struct { Fact *p; size_t n, cap; } facts;
+  struct { Subsume *p; size_t n, cap; } subsumes;
   size_t tywords;
   uint64_t *symmask, *nummask; /* subtypes of each base */
   int nsubtypes;

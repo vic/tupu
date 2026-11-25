@@ -63,6 +63,8 @@ test: san unit api-test
     BIN=$B sh tests/o3.sh || rc=1
     BIN=$B sh tests/o4.sh || rc=1
     BIN=$B sh tests/o8.sh || rc=1
+    BIN=$B sh tests/lattice.sh || rc=1
+    BIN=build/tupu-san sh tests/lattice.sh || rc=1
     O8_SAN=1 BIN=build/tupu-san sh tests/o8.sh || rc=1
     PROVFLAG=1 BIN=$B sh tests/o1.sh || rc=1
     [ -n "${SKIP_O7:-}" ] || BIN=$B sh tests/o7.sh || rc=1
@@ -74,6 +76,7 @@ mutants: count
     rc=0
     BIN=build/tupu-count sh tests/counters.sh || rc=1
     BIN=result/bin/tupu sh tests/o5.sh || rc=1
+    just mutant LATTICEDIR && BIN=result/bin/tupu MUT=build/tupu-mut-LATTICEDIR sh tests/lattice.sh || rc=1
     exit $rc
 
 # bench: every row of bench/set.tsv (name, program, facts dir) through hyperfine; rows are appended to bench/out/rows.txt

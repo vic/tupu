@@ -397,12 +397,65 @@ static Status parse_body(Parser *x, Dnf *out, bool top) {
   return STATUS_OK;
 }
 
+/* The one subsumption form tupu runs: R(k1, .., a, ..) <= R(k1, .., b, ..) :- a <= b. (keep the largest value of the
+   column where a and b stand) or :- b <= a. (keep the smallest). Every other argument is the same variable in both atoms,
+   all variables are distinct, and the body is that one comparison. Any other shape is refused (fail closed). */
+static Status parse_subsume(Parser *x, const Token *first, const Atom *lo) {
+  Program *pg = x->prog;
+  next(x);
+  Atom hi;
+  if (parse_atom(x, &hi) != STATUS_OK) return STATUS_ERR;
+  if (expect(x, T_IMPLIES, "expected :- after a subsumption head") != STATUS_OK) return STATUS_ERR;
+  Lit *cmp = NULL;
+  if (parse_literal(x, &cmp) != STATUS_OK) return STATUS_ERR;
+  if (expect(x, T_DOT, "expected . at the end of a subsumption") != STATUS_OK) return STATUS_ERR;
+  const char *bad = NULL;
+  int col = -1;
+  if (lo->name.n != hi.name.n || memcmp(lo->name.s, hi.name.s, lo->name.n) != 0) bad = "both atoms must name one relation";
+  else if (lo->nargs != hi.nargs) bad = "both atoms must have the same arity";
+  for (int i = 0; bad == NULL && i < lo->nargs; i++) {
+    const Expr *a = lo->args[i], *b = hi.args[i];
+    if (a->kind != EX_VAR || b->kind != EX_VAR) bad = "every argument must be a variable";
+    else if (a->var != b->var) {
+      if (col >= 0) bad = "exactly one column may differ";
+      else col = i;
+    }
+  }
+  if (bad == NULL && col < 0) bad = "one column must differ";
+  for (int i = 0; bad == NULL && i < lo->nargs; i++)
+    for (int j = 0; bad == NULL && j < lo->nargs; j++)
+      if (i != j && (lo->args[i]->var == lo->args[j]->var || hi.args[i]->var == hi.args[j]->var ||
+                     (i != col && (lo->args[i]->var == lo->args[col]->var || lo->args[i]->var == hi.args[col]->var))))
+        bad = "the variables must be distinct";
+  bool keep_max = false;
+  if (bad == NULL) {
+    if (cmp->kind != LIT_CMP || cmp->cmp != CMP_LE || cmp->l->kind != EX_VAR || cmp->r->kind != EX_VAR) {
+      bad = "the body must be one comparison a <= b of the two differing variables";
+    } else {
+      int va = lo->args[col]->var, vb = hi.args[col]->var;
+      if (cmp->l->var == va && cmp->r->var == vb) keep_max = true;
+      else if (!(cmp->l->var == vb && cmp->r->var == va)) bad = "the body must compare the two differing variables";
+    }
+  }
+  if (bad != NULL) return err_set(x->e, CODE_PARSE, first->file, first->line, "subsumption: %s", bad);
+  Subsume *s = ARR_SLOT(x->a, pg->subsumes, x->e);
+  if (s == NULL) return STATUS_ERR;
+  s->rel = lo->name;
+  s->file = first->file;
+  s->line = first->line;
+  s->ncols = lo->nargs;
+  s->col = col;
+  s->keep_max = keep_max;
+  return STATUS_OK;
+}
+
 static Status parse_clause(Parser *x) {
   Program *pg = x->prog;
   Token *first = cur(x);
   x->vars.n = 0;
   Atom head;
   if (parse_atom(x, &head) != STATUS_OK) return STATUS_ERR;
+  if (cur(x)->kind == T_LE) return parse_subsume(x, first, &head);
   if (cur(x)->kind == T_DOT) { /* a program fact: every argument is a literal */
     for (int i = 0; i < head.nargs; i++) {
       ExKind k = head.args[i]->kind;
@@ -446,6 +499,7 @@ static Status parse_decl(Parser *x) {
   Relation *r = ARR_SLOT(x->a, pg->rels, x->e);
   if (r == NULL) return STATUS_ERR;
   memset(r, 0, sizeof *r);
+  r->lat_col = -1;
   r->name.s = nm->s;
   r->name.n = nm->n;
   r->file = d->file;
