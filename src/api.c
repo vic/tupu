@@ -14,10 +14,56 @@ struct TupuSession {
   Err err;
   char *src_copy;
   uint32_t ranked_nsyms;
+  uint32_t *base_rank;
+  bool has_ord;
   TupuSessionPhase phase;
   int *rel_hash;
   size_t rel_hash_mask;
 };
+
+static bool expr_uses_ord(const Expr *e) {
+  if (e == NULL) return false;
+  switch (e->kind) {
+  case EX_NUM:
+  case EX_SYM:
+  case EX_VAR:
+  case EX_WILD: return false;
+  case EX_NEG: return expr_uses_ord(e->a);
+  case EX_BIN: return expr_uses_ord(e->a) || expr_uses_ord(e->b);
+  case EX_FN: return e->fn == FN_ORD || expr_uses_ord(e->a) || expr_uses_ord(e->b);
+  }
+  return false;
+}
+
+static bool atom_uses_ord(const Atom *a) {
+  for (int i = 0; i < a->nargs; i++)
+    if (expr_uses_ord(a->args[i])) return true;
+  return false;
+}
+
+static bool lit_uses_ord(const Lit *l) {
+  switch (l->kind) {
+  case LIT_POS:
+  case LIT_NEG: return atom_uses_ord(&l->atom);
+  case LIT_CMP: return expr_uses_ord(l->l) || expr_uses_ord(l->r);
+  case LIT_AGG:
+    if (expr_uses_ord(l->l) || expr_uses_ord(l->aggexpr)) return true;
+    for (int i = 0; i < l->nbody; i++)
+      if (lit_uses_ord(l->body[i])) return true;
+    return false;
+  }
+  return false;
+}
+
+static bool prog_uses_ord(const Program *p) {
+  for (size_t i = 0; i < p->rules.n; i++) {
+    const Rule *r = &p->rules.p[i];
+    if (atom_uses_ord(&r->head)) return true;
+    for (int j = 0; j < r->nlits; j++)
+      if (lit_uses_ord(r->lits[j])) return true;
+  }
+  return false;
+}
 
 static uint64_t rel_name_hash(const char *s, size_t n) {
   uint64_t h = 14695981039346656037ULL;
@@ -115,7 +161,22 @@ TupuSession *tupu_open_ex(const char *src, size_t len, const char *name, uint64_
     free(s);
     return NULL;
   }
+  s->has_ord = prog_uses_ord(&s->prog);
   s->ranked_nsyms = s->prog.syms.n;
+  if (s->has_ord && s->prog.syms.n > 0 && s->prog.syms.rank != NULL) {
+    s->base_rank = malloc((size_t)s->prog.syms.n * sizeof *s->base_rank);
+    if (s->base_rank == NULL) {
+      (void)err_oom(&s->err);
+      report_err(&s->err, err_code, err_buf, err_cap);
+      free(s->rel_hash);
+      engine_close(&s->eng);
+      program_free(&s->prog);
+      free(s->src_copy);
+      free(s);
+      return NULL;
+    }
+    memcpy(s->base_rank, s->prog.syms.rank, (size_t)s->prog.syms.n * sizeof *s->base_rank);
+  }
   sym_seal(&s->prog.syms); /* the rule program and its facts own these symbols; units come and go */
   s->phase = TupuPhaseLoading;
   return s;
@@ -133,6 +194,7 @@ int tupu_last_err_code(const TupuSession *s) {
 
 void tupu_close(TupuSession *s) {
   if (s == NULL) return;
+  free(s->base_rank);
   free(s->rel_hash);
   engine_close(&s->eng);
   program_free(&s->prog);
@@ -146,9 +208,16 @@ int tupu_reset(TupuSession *s) {
     s->phase = TupuPhaseFailed;
     return -1;
   }
-  /* the tables are empty, so no row names an evaluation symbol: drop them, and rank again on the next eval */
+  /* the tables are empty, so no row names an evaluation symbol: drop them, and restore base rank if cached */
   sym_forget_evaluation(&s->prog.syms);
-  s->ranked_nsyms = UINT32_MAX;
+  if (!s->has_ord) {
+    s->ranked_nsyms = s->prog.syms.n;
+  } else if (s->base_rank != NULL && s->prog.syms.rank != NULL) {
+    memcpy(s->prog.syms.rank, s->base_rank, (size_t)s->prog.syms.base * sizeof *s->base_rank);
+    s->ranked_nsyms = s->prog.syms.base;
+  } else {
+    s->ranked_nsyms = UINT32_MAX;
+  }
   s->phase = TupuPhaseLoading;
   return 0;
 }
@@ -226,7 +295,7 @@ int tupu_eval(TupuSession *s, int *err_code, char *err_buf, size_t err_cap) {
     report_err(&s->err, err_code, err_buf, err_cap);
     return -1;
   }
-  if (s->prog.syms.n != s->ranked_nsyms || (s->prog.syms.n > 0 && s->prog.syms.rank == NULL)) {
+  if (s->has_ord && (s->prog.syms.n != s->ranked_nsyms || (s->prog.syms.n > 0 && s->prog.syms.rank == NULL))) {
     if (sym_build_rank(&s->prog.syms, &s->err) != STATUS_OK) {
       s->phase = TupuPhaseFailed;
       report_err(&s->err, err_code, err_buf, err_cap);
@@ -234,11 +303,13 @@ int tupu_eval(TupuSession *s, int *err_code, char *err_buf, size_t err_cap) {
     }
     s->ranked_nsyms = s->prog.syms.n;
   }
-  for (size_t i = 0; i < s->prog.rels.n; i++) {
-    if (table_enable_bitset(&s->eng.tabs[i], (uint32_t)s->prog.syms.n, &s->err) != STATUS_OK) {
-      s->phase = TupuPhaseFailed;
-      report_err(&s->err, err_code, err_buf, err_cap);
-      return -1;
+  if (s->prog.syms.n > 8192u) {
+    for (size_t i = 0; i < s->prog.rels.n; i++) {
+      if (s->eng.tabs[i].bits != NULL && table_enable_bitset(&s->eng.tabs[i], (uint32_t)s->prog.syms.n, &s->err) != STATUS_OK) {
+        s->phase = TupuPhaseFailed;
+        report_err(&s->err, err_code, err_buf, err_cap);
+        return -1;
+      }
     }
   }
   if (engine_eval(&s->eng, &s->err) != STATUS_OK) {

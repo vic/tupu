@@ -314,7 +314,7 @@ static Status step_atom(Engine *x, const Plan *p, int k, PlanEnd end) {
           for (uint32_t i = b; i-- > a;) {
             uint32_t fv;
             memcpy(&fv, cells + (size_t)i * sizeof(uint32_t), sizeof fv);
-            if (brow != NULL && ((brow[fv >> 6] >> (fv & 63)) & 1ULL) != 0) continue;
+            if (brow != NULL && fv < ht->bit_nsyms && ((brow[fv >> 6] >> (fv & 63)) & 1ULL) != 0) continue;
             uint64_t fkey = ((uint64_t)c0 << 32) | (uint64_t)fv;
             uint64_t h = mix64(fkey);
             hv[1] = (I128)fv;
@@ -328,7 +328,7 @@ static Status step_atom(Engine *x, const Plan *p, int k, PlanEnd end) {
             memcpy(&fv, cells + (size_t)i * sizeof(uint32_t), sizeof fv);
             uint32_t v0 = var0 ? fv : c0;
             uint32_t v1 = var1 ? fv : c1;
-            if (v0 < ht->bit_nsyms && ht->bits[v0] != NULL && ((ht->bits[v0][v1 >> 6] >> (v1 & 63)) & 1ULL) != 0) continue;
+            if (v0 < ht->bit_nsyms && v1 < ht->bit_nsyms && ht->bits[v0] != NULL && ((ht->bits[v0][v1 >> 6] >> (v1 & 63)) & 1ULL) != 0) continue;
             uint64_t fkey = ((uint64_t)v0 << 32) | (uint64_t)v1;
             uint64_t h = mix64(fkey);
             if (var0) hv[0] = (I128)v0;

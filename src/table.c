@@ -27,31 +27,14 @@ Status table_init(Table *t, const Relation *r, bool want_prov, Err *e) {
 
 static Status dedup_grow(Table *t, Err *e);
 
-Status table_enable_bitset(Table *t, uint32_t nsyms, Err *e) {
-  if (!t->fast2 || nsyms == 0) return STATUS_OK;
-  if (t->bits != NULL) {
-    if (nsyms <= t->bit_nsyms) return STATUS_OK;
-    for (uint32_t i = 0; i < t->bit_nsyms; i++) free(t->bits[i]);
-    free(t->bits);
-    t->bits = NULL;
-    t->bit_nsyms = 0;
-    t->bit_words = 0;
-    if (nsyms > 8192) {
-      while (t->dcap == 0 || (size_t)(t->count + 1) * 20 > t->dcap * 13) {
-        if (dedup_grow(t, e) != STATUS_OK) return STATUS_ERR;
-      }
-      const uint32_t *c0 = (const uint32_t *)t->col[0];
-      const uint32_t *c1 = (const uint32_t *)t->col[1];
-      for (uint32_t r = 0; r < t->count; r++) {
-        uint64_t k = ((uint64_t)c0[r] << 32) | (uint64_t)c1[r];
-        size_t i = mix64(k) & (t->dcap - 1);
-        while (t->dkey[i] != UINT64_MAX) i = (i + 1) & (t->dcap - 1);
-        t->dkey[i] = k;
-      }
-      return STATUS_OK;
-    }
-  }
-  if (nsyms > 8192) return STATUS_OK;
+static uint32_t bitset_target(uint32_t need) {
+  if (need > 8192u) return need;
+  uint32_t cap = 256u;
+  while (cap < need) cap *= 2u;
+  return cap <= 8192u ? cap : 8192u;
+}
+
+static Status bitset_alloc(Table *t, uint32_t nsyms, Err *e) {
   uint32_t words = (nsyms + 63u) / 64u;
   uint64_t **bits = calloc(nsyms, sizeof *bits);
   if (bits == NULL) return err_oom(e);
@@ -76,6 +59,45 @@ Status table_enable_bitset(Table *t, uint32_t nsyms, Err *e) {
   t->dkey = NULL;
   t->dcap = 0;
   return STATUS_OK;
+}
+
+Status table_enable_bitset(Table *t, uint32_t nsyms, Err *e) {
+  if (!t->fast2 || nsyms == 0) return STATUS_OK;
+  if (t->count == 0) {
+    if (t->bits != NULL && (nsyms > t->bit_nsyms || nsyms > 8192u)) {
+      for (uint32_t i = 0; i < t->bit_nsyms; i++) free(t->bits[i]);
+      free(t->bits);
+      t->bits = NULL;
+      t->bit_nsyms = 0;
+      t->bit_words = 0;
+    }
+    return STATUS_OK;
+  }
+  uint32_t target = bitset_target(nsyms);
+  if (t->bits != NULL) {
+    if (nsyms <= t->bit_nsyms) return STATUS_OK;
+    for (uint32_t i = 0; i < t->bit_nsyms; i++) free(t->bits[i]);
+    free(t->bits);
+    t->bits = NULL;
+    t->bit_nsyms = 0;
+    t->bit_words = 0;
+    if (nsyms > 8192u) {
+      while (t->dcap == 0 || (size_t)(t->count + 1) * 20 > t->dcap * 13) {
+        if (dedup_grow(t, e) != STATUS_OK) return STATUS_ERR;
+      }
+      const uint32_t *c0 = (const uint32_t *)t->col[0];
+      const uint32_t *c1 = (const uint32_t *)t->col[1];
+      for (uint32_t r = 0; r < t->count; r++) {
+        uint64_t k = ((uint64_t)c0[r] << 32) | (uint64_t)c1[r];
+        size_t i = mix64(k) & (t->dcap - 1);
+        while (t->dkey[i] != UINT64_MAX) i = (i + 1) & (t->dcap - 1);
+        t->dkey[i] = k;
+      }
+      return STATUS_OK;
+    }
+  }
+  if (nsyms > 8192u) return STATUS_OK;
+  return bitset_alloc(t, target, e);
 }
 
 /* The cost of a clear follows the rows the table held, not the capacity it grew to: every set bit of the dedup bit
@@ -341,12 +363,19 @@ Status table_add(Table *t, uint64_t h, const I128 *vals, Origin org, uint32_t re
   size_t i = 0;
   uint64_t fkey = 0;
   uint32_t bv0 = 0, bv1 = 0;
+  if (t->fast2 && t->bits == NULL && t->dcap == 0 && t->count == 0) {
+    uint32_t v0 = (uint32_t)vals[0], v1 = (uint32_t)vals[1];
+    uint32_t need = (v0 > v1 ? v0 : v1) + 1;
+    if (need <= 8192u) {
+      if (bitset_alloc(t, bitset_target(need), e) != STATUS_OK) return STATUS_ERR;
+    }
+  }
   if (t->bits != NULL) {
     bv0 = (uint32_t)vals[0];
     bv1 = (uint32_t)vals[1];
     if (bv0 >= t->bit_nsyms || bv1 >= t->bit_nsyms) {
       uint32_t need = (bv0 > bv1 ? bv0 : bv1) + 1;
-      uint32_t target = need <= 8192 ? (need < 256 ? 256 : (need * 2 <= 8192 ? need * 2 : 8192)) : need;
+      uint32_t target = bitset_target(need);
       if (table_enable_bitset(t, target, e) != STATUS_OK) return STATUS_ERR;
     }
   }

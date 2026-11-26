@@ -1,6 +1,8 @@
 /* Unit tests of the library modules: the splitmix64 known answers of emitter.md 4, exact integers. */
 #include "../src/common.h"
 #include "../src/num.h"
+#include "../src/sym.h"
+#include "../src/table.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -36,9 +38,56 @@ static void test_num(void) {
   CHECK(!num_neg(NUM_MIN, &v) && num_neg(5, &v) && v == -5);
 }
 
+static void test_sym_rank_and_empty_bitset(void) {
+  Err err = {0};
+  SymTab s;
+  sym_init(&s);
+  uint32_t id_b = 0, id_d = 0, id_f = 0;
+  CHECK(sym_intern(&s, "b", 1, &id_b, &err) == STATUS_OK);
+  CHECK(sym_intern(&s, "d", 1, &id_d, &err) == STATUS_OK);
+  CHECK(sym_intern(&s, "f", 1, &id_f, &err) == STATUS_OK);
+  sym_seal(&s);
+  CHECK(sym_build_rank(&s, &err) == STATUS_OK);
+  CHECK(s.rank[id_b] == 0 && s.rank[id_d] == 1 && s.rank[id_f] == 2);
+
+  uint32_t id_a = 0, id_c = 0, id_e = 0;
+  CHECK(sym_intern(&s, "a", 1, &id_a, &err) == STATUS_OK);
+  CHECK(sym_intern(&s, "c", 1, &id_c, &err) == STATUS_OK);
+  CHECK(sym_intern(&s, "e", 1, &id_e, &err) == STATUS_OK);
+  CHECK(sym_build_rank(&s, &err) == STATUS_OK);
+  CHECK(s.rank[id_a] == 0 && s.rank[id_b] == 1 && s.rank[id_c] == 2);
+  CHECK(s.rank[id_d] == 3 && s.rank[id_e] == 4 && s.rank[id_f] == 5);
+
+  sym_forget_evaluation(&s);
+  CHECK(s.n == 3);
+  CHECK(sym_build_rank(&s, &err) == STATUS_OK);
+  CHECK(s.rank[id_b] == 0 && s.rank[id_d] == 1 && s.rank[id_f] == 2);
+  sym_free(&s);
+
+  Base kinds[2] = { BASE_SYMBOL, BASE_SYMBOL };
+  Relation rel = {0};
+  rel.ncols = 2;
+  rel.colkind = kinds;
+  rel.lat_col = -1;
+  Table t;
+  CHECK(table_init(&t, &rel, false, &err) == STATUS_OK);
+  CHECK(table_enable_bitset(&t, 64, &err) == STATUS_OK);
+  CHECK(t.bits == NULL);
+  I128 row[2] = { 1, 2 };
+  bool added = false;
+  CHECK(table_add(&t, table_hash_row(&t, row), row, ORG_INPUT, 0, 0, NULL, 0, &added, &err) == STATUS_OK && added);
+  CHECK(t.bits != NULL);
+  CHECK(table_contains(&t, row));
+  table_clear(&t);
+  CHECK(t.count == 0);
+  CHECK(!table_contains(&t, row));
+  table_free(&t);
+}
+
 int main(void) {
   test_mix();
   test_num();
+  test_sym_rank_and_empty_bitset();
   printf("unit failures=%d\n", failures);
   return failures == 0 ? 0 : 1;
 }

@@ -1176,6 +1176,134 @@ static void test_shuffle_golden_order_independence(void) {
   free(prog_buf);
 }
 
+static void test_ord_and_sparse_bitset_across_resets(void) {
+  static const char *PROG =
+      ".decl node(x: symbol)\n"
+      ".input node\n"
+      ".decl edge(x: symbol, y: symbol)\n"
+      ".input edge\n"
+      ".decl ord_lt(x: symbol, y: symbol)\n"
+      ".output ord_lt\n"
+      ".decl ord_b0(x: symbol)\n"
+      ".output ord_b0\n"
+      ".decl r0(x: symbol, y: symbol)\n"
+      ".output r0\n"
+      ".decl r1(x: symbol, y: symbol)\n"
+      ".decl r2(x: symbol, y: symbol)\n"
+      ".decl r3(x: symbol, y: symbol)\n"
+      ".decl r4(x: symbol, y: symbol)\n"
+      "node(\"b\").\n"
+      "node(\"d\").\n"
+      "node(\"f\").\n"
+      "ord_lt(x, y) :- node(x), node(y), ord(x) < ord(y).\n"
+      "ord_b0(x) :- node(x), ord(x) = 0.\n"
+      "r0(x, y) :- edge(x, y).\n"
+      "r0(x, z) :- r0(x, y), edge(y, z).\n"
+      "r1(x, y) :- r2(x, y).\n"
+      "r3(x, y) :- r4(x, y).\n";
+
+  char ebuf[256];
+  int ecode = -1;
+  TupuSession *s = tupu_open(PROG, strlen(PROG), "ord_sparse.dl", 1000000, 1, ebuf, sizeof ebuf, &ecode);
+  check(s != NULL && ecode == 0, "ord_sparse open");
+  if (s == NULL) return;
+
+  int node_id = tupu_rel_id(s, "node");
+  int edge_id = tupu_rel_id(s, "edge");
+  int ord_lt_id = tupu_rel_id(s, "ord_lt");
+  int ord_b0_id = tupu_rel_id(s, "ord_b0");
+  int r0_id = tupu_rel_id(s, "r0");
+
+  /* Frame 1: base symbols only */
+  check(tupu_eval(s, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "ord_sparse f1 eval");
+  check(tupu_rel_count(s, ord_lt_id) == 3, "ord_sparse f1 ord_lt == 3");
+  check(tupu_rel_count(s, ord_b0_id) == 1, "ord_sparse f1 ord_b0 == 1");
+  check(tupu_rel_count(s, r0_id) == 0, "ord_sparse f1 r0 == 0");
+
+  /* Frame 2: interleaved eval symbols + populated fast2 r0 */
+  check(tupu_reset(s) == 0, "ord_sparse f2 reset");
+  uint32_t sa = 0, sc = 0, se = 0;
+  check(tupu_intern(s, "a", 1, &sa) == 0, "intern a");
+  check(tupu_intern(s, "c", 1, &sc) == 0, "intern c");
+  check(tupu_intern(s, "e", 1, &se) == 0, "intern e");
+  int64_t n1[1] = { (int64_t)sa }, n2[1] = { (int64_t)sc }, n3[1] = { (int64_t)se };
+  check(tupu_add_row(s, node_id, n1, 1) == 0, "add node a");
+  check(tupu_add_row(s, node_id, n2, 1) == 0, "add node c");
+  check(tupu_add_row(s, node_id, n3, 1) == 0, "add node e");
+  int64_t e1[2] = { (int64_t)sa, (int64_t)sc }, e2[2] = { (int64_t)sc, (int64_t)se };
+  check(tupu_add_row(s, edge_id, e1, 2) == 0, "add edge ac");
+  check(tupu_add_row(s, edge_id, e2, 2) == 0, "add edge ce");
+  check(tupu_eval(s, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "ord_sparse f2 eval");
+  check(tupu_rel_count(s, ord_lt_id) == 15, "ord_sparse f2 ord_lt == 15");
+  check(tupu_rel_count(s, r0_id) == 3, "ord_sparse f2 r0 == 3");
+
+  /* Frame 3: back to base symbols only */
+  check(tupu_reset(s) == 0, "ord_sparse f3 reset");
+  check(tupu_eval(s, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "ord_sparse f3 eval");
+  check(tupu_rel_count(s, ord_lt_id) == 3, "ord_sparse f3 ord_lt == 3");
+  check(tupu_rel_count(s, ord_b0_id) == 1, "ord_sparse f3 ord_b0 == 1");
+  check(tupu_rel_count(s, r0_id) == 0, "ord_sparse f3 r0 == 0");
+
+  /* Frame 4: >8192 symbols threshold crossing */
+  check(tupu_reset(s) == 0, "ord_sparse f4 reset");
+  uint32_t sfirst = 0, slast = 0, sb = 0;
+  for (int i = 0; i < 8200; i++) {
+    char buf[16];
+    int n = snprintf(buf, sizeof buf, "s%d", i);
+    uint32_t tmp = 0;
+    check(tupu_intern(s, buf, (size_t)n, &tmp) == 0, "intern >8192");
+    if (i == 0) sfirst = tmp;
+    if (i == 8199) slast = tmp;
+  }
+  check(tupu_intern(s, "b", 1, &sb) == 0, "intern b");
+  int64_t e3[2] = { (int64_t)sfirst, (int64_t)slast }, e4[2] = { (int64_t)slast, (int64_t)sb };
+  check(tupu_add_row(s, edge_id, e3, 2) == 0, "add edge s0->s8199");
+  check(tupu_add_row(s, edge_id, e4, 2) == 0, "add edge s8199->b");
+  check(tupu_eval(s, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "ord_sparse f4 eval");
+  check(tupu_rel_count(s, ord_lt_id) == 3, "ord_sparse f4 ord_lt == 3");
+  check(tupu_rel_count(s, r0_id) == 3, "ord_sparse f4 r0 == 3");
+
+  tupu_close(s);
+}
+
+static void test_lazy_bitset_bounds_check(void) {
+  static const char *PROG =
+      ".decl edge(x: symbol, y: symbol)\n"
+      ".input edge\n"
+      ".decl reach(x: symbol, y: symbol)\n"
+      ".input reach\n"
+      ".output reach\n"
+      ".decl rev_reach(y: symbol, x: symbol)\n"
+      ".output rev_reach\n"
+      "reach(x, z) :- reach(x, y), edge(y, z).\n"
+      "rev_reach(z, x) :- reach(x, y), edge(y, z).\n";
+
+  char ebuf[256];
+  int ecode = -1;
+  TupuSession *s = tupu_open(PROG, strlen(PROG), "lazy_bitset_oob.dl", 1000000, 1, ebuf, sizeof ebuf, &ecode);
+  check(s != NULL && ecode == 0, "lazy_bitset open");
+  if (s == NULL) return;
+
+  int edge_id = tupu_rel_id(s, "edge");
+  int reach_id = tupu_rel_id(s, "reach");
+  int rev_id = tupu_rel_id(s, "rev_reach");
+
+  uint32_t syms[400];
+  for (int i = 0; i < 400; i++) {
+    char buf[16];
+    int n = snprintf(buf, sizeof buf, "p%d", i);
+    check(tupu_intern(s, buf, (size_t)n, &syms[i]) == 0, "lazy_bitset intern");
+  }
+  int64_t r0[2] = { (int64_t)syms[0], (int64_t)syms[1] };
+  int64_t e0[2] = { (int64_t)syms[1], (int64_t)syms[350] };
+  check(tupu_add_row(s, reach_id, r0, 2) == 0, "lazy_bitset add reach");
+  check(tupu_add_row(s, edge_id, e0, 2) == 0, "lazy_bitset add edge");
+  check(tupu_eval(s, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "lazy_bitset eval");
+  check(tupu_rel_count(s, reach_id) == 2, "lazy_bitset reach == 2");
+  check(tupu_rel_count(s, rev_id) == 1, "lazy_bitset rev_reach == 1");
+  tupu_close(s);
+}
+
 int main(void) {
   test_1000_frames();
   test_budget_exceeded();
@@ -1189,6 +1317,8 @@ int main(void) {
   test_delta_not_displaced_and_empty_skip();
   test_replay_checks_all_idb_and_round_order();
   test_shuffle_golden_order_independence();
+  test_ord_and_sparse_bitset_across_resets();
+  test_lazy_bitset_bounds_check();
   printf("api_test failures=%d\n", fails);
   return fails == 0 ? 0 : 1;
 }
