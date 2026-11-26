@@ -396,6 +396,103 @@ static void test_sparse_multistratum_frames(void) {
   tupu_close(s);
 }
 
+static const char *NEG_PROG =
+    ".decl in(x: symbol)\n"
+    ".input in\n"
+    ".decl bad(x: symbol)\n"
+    ".input bad\n"
+    ".decl ok(x: symbol)\n"
+    ".output ok\n"
+    "ok(x) :- in(x), !bad(x).\n";
+
+static void test_eval_requires_reset(void) {
+  char ebuf[256];
+  int ecode = -1;
+  TupuSession *s = tupu_open_ex(NEG_PROG, strlen(NEG_PROG), "neg.dl", 1000, 1, 1, ebuf, sizeof ebuf, &ecode);
+  check(s != NULL && ecode == 0, "tupu_open_ex neg");
+  if (s == NULL) return;
+
+  int in_id = tupu_rel_id(s, "in");
+  int bad_id = tupu_rel_id(s, "bad");
+  int ok_id = tupu_rel_id(s, "ok");
+  check(in_id >= 0 && bad_id >= 0 && ok_id >= 0, "neg rel ids found");
+
+  ecode = -1;
+  check(tupu_replay(s, &ecode, ebuf, sizeof ebuf) == -1 && ecode == TUPU_CODE_USAGE,
+        "replay before eval fails closed with TUPU_CODE_USAGE");
+
+  uint32_t sym_a = 0, sym_b = 0;
+  check(tupu_intern(s, "a", 1, &sym_a) == 0, "intern a");
+  int64_t row_a[1] = { (int64_t)sym_a };
+  TupuI128 row_a128[1] = { tupu_i128_from_u64(sym_a) };
+  check(tupu_add_row(s, in_id, row_a, 1) == 0, "add in(a)");
+  ecode = -1;
+  check(tupu_eval(s, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "eval neg first frame");
+  check(tupu_rel_count(s, ok_id) == 1, "ok has 1 row");
+
+  ecode = -1;
+  check(tupu_replay(s, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "replay after eval succeeds");
+  check(tupu_intern(s, "b", 1, &sym_b) == -1 && tupu_last_err_code(s) == TUPU_CODE_USAGE,
+        "intern after eval fails closed");
+  check(tupu_add_row(s, bad_id, row_a, 1) == -1 && tupu_last_err_code(s) == TUPU_CODE_USAGE,
+        "add_row after eval fails closed");
+  check(tupu_add_row_i128(s, bad_id, row_a128, 1) == -1 && tupu_last_err_code(s) == TUPU_CODE_USAGE,
+        "add_row_i128 after eval fails closed");
+  ecode = -1;
+  check(tupu_eval(s, &ecode, ebuf, sizeof ebuf) == -1 && ecode == TUPU_CODE_USAGE,
+        "eval after eval fails closed");
+
+  check(tupu_reset(s) == 0, "reset after eval succeeds");
+  check(tupu_intern(s, "a", 1, &sym_a) == 0, "re-intern a after reset");
+  row_a[0] = (int64_t)sym_a;
+  check(tupu_add_row(s, in_id, row_a, 1) == 0, "add in(a) after reset");
+  check(tupu_add_row(s, bad_id, row_a, 1) == 0, "add bad(a) after reset");
+  ecode = -1;
+  check(tupu_eval(s, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "eval neg second frame");
+  check(tupu_rel_count(s, ok_id) == 0, "ok has 0 rows after bad(a)");
+
+  ecode = -1;
+  TupuSession *budget_session = tupu_open_ex(TC_PROG, strlen(TC_PROG), "tc_budget.dl", 1, 1, 1, ebuf, sizeof ebuf, &ecode);
+  check(budget_session != NULL && ecode == 0, "tupu_open_ex budget 1");
+  if (budget_session != NULL) {
+    int edge_id = tupu_rel_id(budget_session, "edge");
+    int tc_id = tupu_rel_id(budget_session, "tc");
+    check(edge_id >= 0 && tc_id >= 0, "budget rel ids found");
+    uint32_t node_a = 0, node_b = 0, node_c = 0;
+    check(tupu_intern(budget_session, "a", 1, &node_a) == 0, "budget intern a");
+    check(tupu_intern(budget_session, "b", 1, &node_b) == 0, "budget intern b");
+    check(tupu_intern(budget_session, "c", 1, &node_c) == 0, "budget intern c");
+    int64_t edge_ab[2] = { (int64_t)node_a, (int64_t)node_b };
+    int64_t edge_bc[2] = { (int64_t)node_b, (int64_t)node_c };
+    check(tupu_add_row(budget_session, edge_id, edge_ab, 2) == 0, "budget add ab");
+    check(tupu_add_row(budget_session, edge_id, edge_bc, 2) == 0, "budget add bc");
+    ecode = -1;
+    check(tupu_eval(budget_session, &ecode, ebuf, sizeof ebuf) == -1 && ecode == TUPU_CODE_DATALOG_BUDGET,
+          "budget 1 eval fails with TUPU_CODE_DATALOG_BUDGET");
+    check(tupu_add_row(budget_session, edge_id, edge_ab, 2) == -1 &&
+              tupu_last_err_code(budget_session) == TUPU_CODE_USAGE,
+          "add_row after failed eval fails closed");
+    ecode = -1;
+    check(tupu_eval(budget_session, &ecode, ebuf, sizeof ebuf) == -1 && ecode == TUPU_CODE_USAGE,
+          "eval after failed eval fails closed");
+    ecode = -1;
+    check(tupu_replay(budget_session, &ecode, ebuf, sizeof ebuf) == -1 && ecode == TUPU_CODE_USAGE,
+          "replay after failed eval fails closed");
+    check(tupu_reset(budget_session) == 0, "reset after failed eval succeeds");
+    check(tupu_intern(budget_session, "a", 1, &node_a) == 0, "budget re-intern a");
+    check(tupu_intern(budget_session, "b", 1, &node_b) == 0, "budget re-intern b");
+    edge_ab[0] = (int64_t)node_a;
+    edge_ab[1] = (int64_t)node_b;
+    check(tupu_add_row(budget_session, edge_id, edge_ab, 2) == 0, "budget add 1 row after reset");
+    ecode = -1;
+    check(tupu_eval(budget_session, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0,
+          "budget 1 eval with 1 row succeeds after reset");
+    check(tupu_rel_count(budget_session, tc_id) == 1, "budget 1 tc count == 1");
+    tupu_close(budget_session);
+  }
+  tupu_close(s);
+}
+
 int main(void) {
   test_1000_frames();
   test_budget_exceeded();
@@ -405,6 +502,7 @@ int main(void) {
   test_column_kinds();
   test_i128_text();
   test_sparse_multistratum_frames();
+  test_eval_requires_reset();
   printf("api_test failures=%d\n", fails);
   return fails == 0 ? 0 : 1;
 }

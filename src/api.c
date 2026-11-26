@@ -6,12 +6,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+typedef enum { TupuPhaseLoading, TupuPhaseEvaluated, TupuPhaseFailed } TupuSessionPhase;
+
 struct TupuSession {
   Program prog;
   Engine eng;
   Err err;
   char *src_copy;
   uint32_t ranked_nsyms;
+  TupuSessionPhase phase;
   int *rel_hash;
   size_t rel_hash_mask;
 };
@@ -31,6 +34,12 @@ static void report_err(const Err *e, int *err_code, char *err_buf, size_t err_ca
     if (e->file == NULL) (void)snprintf(err_buf, err_cap, "%s: %s", code_name(e->code), e->text);
     else (void)snprintf(err_buf, err_cap, "%s %s:%ld: %s", code_name(e->code), e->file, e->line, e->text);
   }
+}
+
+static int require_loading(TupuSession *s, const char *op) {
+  if (s->phase == TupuPhaseLoading) return 0;
+  (void)err_set(&s->err, CODE_USAGE, NULL, 0, "%s requires tupu_reset after evaluation", op);
+  return -1;
 }
 
 static I128 i128_from_tupu(TupuI128 v) {
@@ -108,6 +117,7 @@ TupuSession *tupu_open_ex(const char *src, size_t len, const char *name, uint64_
   }
   s->ranked_nsyms = s->prog.syms.n;
   sym_seal(&s->prog.syms); /* the rule program and its facts own these symbols; units come and go */
+  s->phase = TupuPhaseLoading;
   return s;
 }
 
@@ -132,10 +142,14 @@ void tupu_close(TupuSession *s) {
 
 int tupu_reset(TupuSession *s) {
   if (s == NULL) return -1;
-  if (engine_reset(&s->eng, &s->err) != STATUS_OK) return -1;
+  if (engine_reset(&s->eng, &s->err) != STATUS_OK) {
+    s->phase = TupuPhaseFailed;
+    return -1;
+  }
   /* the tables are empty, so no row names an evaluation symbol: drop them, and rank again on the next eval */
   sym_forget_evaluation(&s->prog.syms);
   s->ranked_nsyms = UINT32_MAX;
+  s->phase = TupuPhaseLoading;
   return 0;
 }
 
@@ -166,6 +180,7 @@ int tupu_rel_col_kind(const TupuSession *s, int rel_id, int col) {
 
 int tupu_intern(TupuSession *s, const char *str, size_t len, uint32_t *out_id) {
   if (s == NULL || (str == NULL && len > 0) || out_id == NULL) return -1;
+  if (require_loading(s, "tupu_intern") != 0) return -1;
   return sym_intern(&s->prog.syms, str != NULL ? str : "", len, out_id, &s->err) == STATUS_OK ? 0 : -1;
 }
 
@@ -179,6 +194,7 @@ int tupu_add_row(TupuSession *s, int rel_id, const int64_t *vals, int ncols) {
   if (s == NULL || rel_id < 0 || (size_t)rel_id >= s->prog.rels.n) return -1;
   Table *t = &s->eng.tabs[rel_id];
   if (ncols != t->ncols || (ncols > 0 && vals == NULL)) return -1;
+  if (require_loading(s, "tupu_add_row") != 0) return -1;
   I128 *row = s->eng.cells;
   for (int c = 0; c < ncols; c++) {
     if (t->kind[c] == BASE_SYMBOL) row[c] = (I128)(uint32_t)vals[c];
@@ -192,6 +208,7 @@ int tupu_add_row_i128(TupuSession *s, int rel_id, const TupuI128 *vals, int ncol
   if (s == NULL || rel_id < 0 || (size_t)rel_id >= s->prog.rels.n) return -1;
   Table *t = &s->eng.tabs[rel_id];
   if (ncols != t->ncols || (ncols > 0 && vals == NULL)) return -1;
+  if (require_loading(s, "tupu_add_row_i128") != 0) return -1;
   I128 *row = s->eng.cells;
   for (int c = 0; c < ncols; c++) {
     if (t->kind[c] == BASE_SYMBOL) row[c] = (I128)(uint32_t)vals[c].lo;
@@ -205,8 +222,13 @@ int tupu_eval(TupuSession *s, int *err_code, char *err_buf, size_t err_cap) {
   if (err_code != NULL) *err_code = 0;
   if (err_buf != NULL && err_cap > 0) err_buf[0] = '\0';
   if (s == NULL) return -1;
+  if (require_loading(s, "tupu_eval") != 0) {
+    report_err(&s->err, err_code, err_buf, err_cap);
+    return -1;
+  }
   if (s->prog.syms.n != s->ranked_nsyms || (s->prog.syms.n > 0 && s->prog.syms.rank == NULL)) {
     if (sym_build_rank(&s->prog.syms, &s->err) != STATUS_OK) {
+      s->phase = TupuPhaseFailed;
       report_err(&s->err, err_code, err_buf, err_cap);
       return -1;
     }
@@ -214,14 +236,17 @@ int tupu_eval(TupuSession *s, int *err_code, char *err_buf, size_t err_cap) {
   }
   for (size_t i = 0; i < s->prog.rels.n; i++) {
     if (table_enable_bitset(&s->eng.tabs[i], (uint32_t)s->prog.syms.n, &s->err) != STATUS_OK) {
+      s->phase = TupuPhaseFailed;
       report_err(&s->err, err_code, err_buf, err_cap);
       return -1;
     }
   }
   if (engine_eval(&s->eng, &s->err) != STATUS_OK) {
+    s->phase = TupuPhaseFailed;
     report_err(&s->err, err_code, err_buf, err_cap);
     return -1;
   }
+  s->phase = TupuPhaseEvaluated;
   return 0;
 }
 
@@ -229,6 +254,11 @@ int tupu_replay(TupuSession *s, int *err_code, char *err_buf, size_t err_cap) {
   if (err_code != NULL) *err_code = 0;
   if (err_buf != NULL && err_cap > 0) err_buf[0] = '\0';
   if (s == NULL) return -1;
+  if (s->phase != TupuPhaseEvaluated) {
+    (void)err_set(&s->err, CODE_USAGE, NULL, 0, "tupu_replay requires a completed tupu_eval");
+    report_err(&s->err, err_code, err_buf, err_cap);
+    return -1;
+  }
   if (engine_replay(&s->eng, &s->err) != STATUS_OK) {
     report_err(&s->err, err_code, err_buf, err_cap);
     return -1;
