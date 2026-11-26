@@ -122,6 +122,13 @@ int tupu_rel_ncols(const TupuSession *s, int rel_id) {
   return s->prog.rels.p[rel_id].ncols;
 }
 
+int tupu_rel_col_kind(const TupuSession *s, int rel_id, int col) {
+  if (s == NULL || rel_id < 0 || (size_t)rel_id >= s->prog.rels.n) return -1;
+  const Relation *r = &s->prog.rels.p[rel_id];
+  if (col < 0 || col >= r->ncols) return -1;
+  return r->colkind[col] == BASE_SYMBOL ? TUPU_COL_SYMBOL : TUPU_COL_NUMBER;
+}
+
 int tupu_intern(TupuSession *s, const char *str, size_t len, uint32_t *out_id) {
   if (s == NULL || (str == NULL && len > 0) || out_id == NULL) return -1;
   return sym_intern(&s->prog.syms, str != NULL ? str : "", len, out_id, &s->err) == STATUS_OK ? 0 : -1;

@@ -255,12 +255,37 @@ static void test_i128_and_replay(void) {
   tupu_close(s);
 }
 
+static void test_column_kinds(void) {
+  const char *prog =
+      ".decl mixed(a: symbol, n: number, b: symbol)\n"
+      ".input mixed\n"
+      ".decl tally(n: number)\n"
+      ".output tally\n"
+      "tally(n) :- mixed(_, n, _).\n";
+  char ebuf[256];
+  int ecode = 0;
+  TupuSession *s = tupu_open(prog, strlen(prog), "colkind.dl", 1000000, 1, ebuf, sizeof ebuf, &ecode);
+  check(s != NULL && ecode == 0, "colkind open");
+  if (s == NULL) return;
+  int mixed = tupu_rel_id(s, "mixed");
+  int tally = tupu_rel_id(s, "tally");
+  check(mixed >= 0 && tally >= 0, "colkind rel ids");
+  check(tupu_rel_col_kind(s, mixed, 0) == TUPU_COL_SYMBOL, "colkind mixed symbol 0");
+  check(tupu_rel_col_kind(s, mixed, 1) == TUPU_COL_NUMBER, "colkind mixed number 1");
+  check(tupu_rel_col_kind(s, mixed, 2) == TUPU_COL_SYMBOL, "colkind mixed symbol 2");
+  check(tupu_rel_col_kind(s, tally, 0) == TUPU_COL_NUMBER, "colkind tally number 0");
+  check(tupu_rel_col_kind(s, mixed, 3) == -1 && tupu_rel_col_kind(s, mixed, -1) == -1, "colkind col out of range");
+  check(tupu_rel_col_kind(s, -1, 0) == -1 && tupu_rel_col_kind(NULL, mixed, 0) == -1, "colkind bad rel");
+  tupu_close(s);
+}
+
 int main(void) {
   test_1000_frames();
   test_budget_exceeded();
   test_arith_overflow();
   test_threads_equal();
   test_i128_and_replay();
+  test_column_kinds();
   printf("api_test failures=%d\n", fails);
   return fails == 0 ? 0 : 1;
 }

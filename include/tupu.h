@@ -66,6 +66,10 @@ int tupu_reset(TupuSession *s);
 /* Relation metadata. tupu_rel_id returns -1 if not found; tupu_rel_ncols returns -1 on invalid rel_id. */
 int tupu_rel_id(const TupuSession *s, const char *name);
 int tupu_rel_ncols(const TupuSession *s, int rel_id);
+/* Column kinds of tupu_rel_col_kind. */
+enum { TUPU_COL_SYMBOL = 0, TUPU_COL_NUMBER = 1 };
+/* The kind of column col of relation rel_id: TUPU_COL_SYMBOL or TUPU_COL_NUMBER; -1 on an invalid session, rel_id or col. */
+int tupu_rel_col_kind(const TupuSession *s, int rel_id, int col);
 
 /* Symbol interning and reverse lookup (a symbol interned after open lives until the next tupu_reset). */
 int tupu_intern(TupuSession *s, const char *str, size_t len, uint32_t *out_id);
