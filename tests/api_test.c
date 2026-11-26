@@ -1304,6 +1304,92 @@ static void test_lazy_bitset_bounds_check(void) {
   tupu_close(s);
 }
 
+static void test_opt2_single_thread_and_comp_scoping(void) {
+  static const char *PROG =
+      ".decl edge(x: symbol, y: symbol)\n"
+      ".input edge\n"
+      ".decl blocked(x: symbol)\n"
+      ".input blocked\n"
+      ".decl reach(x: symbol, y: symbol)\n"
+      ".output reach\n"
+      ".decl out_deg(x: symbol, n: number)\n"
+      ".output out_deg\n"
+      ".decl dist(x: symbol, d: number)\n"
+      "dist(x, a) <= dist(x, b) :- b <= a.\n"
+      ".decl u0(x: symbol, y: symbol)\n"
+      ".decl u1(x: symbol, y: symbol)\n"
+      ".decl u2(x: symbol, y: symbol)\n"
+      ".decl u3(x: symbol, y: symbol)\n"
+      ".decl u4(x: symbol, y: symbol)\n"
+      ".decl u5(x: symbol, y: symbol)\n"
+      "reach(x, y) :- edge(x, y), !blocked(y).\n"
+      "reach(x, z) :- reach(x, y), edge(y, z), !blocked(z).\n"
+      "out_deg(x, c) :- edge(x, _), c = count : { reach(x, _) }.\n"
+      "dist(x, 1) :- edge(\"n0\", x), !blocked(x).\n"
+      "dist(y, d + 1) :- dist(x, d), edge(x, y), !blocked(y), d < 10.\n"
+      "u0(x, y) :- u1(x, y).\n"
+      "u2(x, y) :- u3(x, y).\n"
+      "u4(x, y) :- u5(x, y).\n";
+
+  char ebuf[256];
+  int ecode = -1;
+  size_t nthreads_list[3] = { 1, 1, 4 };
+  int prov_list[3] = { 0, 1, 0 };
+  uint32_t expected_reach = 0, expected_deg = 0, expected_dist = 0;
+
+  for (int cfg = 0; cfg < 3; cfg++) {
+    TupuSession *s = tupu_open_ex(PROG, strlen(PROG), "opt2.dl", 1000000, prov_list[cfg], nthreads_list[cfg], ebuf,
+                                  sizeof ebuf, &ecode);
+    check(s != NULL && ecode == 0, "opt2 open");
+    if (s == NULL) return;
+    int edge_id = tupu_rel_id(s, "edge");
+    int blk_id = tupu_rel_id(s, "blocked");
+    int reach_id = tupu_rel_id(s, "reach");
+    int deg_id = tupu_rel_id(s, "out_deg");
+    int dist_id = tupu_rel_id(s, "dist");
+
+    for (int frame = 0; frame < 3; frame++) {
+      check(tupu_reset(s) == 0, "opt2 reset");
+      uint32_t sym[6];
+      for (int i = 0; i < 6; i++) {
+        char buf[16];
+        int n = snprintf(buf, sizeof buf, "n%d", i);
+        check(tupu_intern(s, buf, (size_t)n, &sym[i]) == 0, "opt2 intern");
+      }
+      for (int i = 0; i < 5; i++) {
+        int64_t erow[2] = { (int64_t)sym[i], (int64_t)sym[i + 1] };
+        check(tupu_add_row(s, edge_id, erow, 2) == 0, "opt2 add edge");
+      }
+      int64_t shortcut[2] = { (int64_t)sym[0], (int64_t)sym[3] };
+      check(tupu_add_row(s, edge_id, shortcut, 2) == 0, "opt2 add shortcut");
+      if (frame == 1) {
+        int64_t brow[1] = { (int64_t)sym[4] };
+        check(tupu_add_row(s, blk_id, brow, 1) == 0, "opt2 add blocked");
+      }
+      check(tupu_eval(s, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "opt2 eval");
+      if (prov_list[cfg]) check(tupu_replay(s, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "opt2 replay");
+      uint32_t rc = tupu_rel_count(s, reach_id);
+      uint32_t dc = tupu_rel_count(s, deg_id);
+      uint32_t sc = tupu_rel_count(s, dist_id);
+      if (frame == 0) {
+        if (cfg == 0) {
+          expected_reach = rc;
+          expected_deg = dc;
+          expected_dist = sc;
+          check(rc == 15 && dc == 5 && sc > 0, "opt2 expected counts");
+        } else {
+          check(rc == expected_reach && dc == expected_deg && sc == expected_dist, "opt2 cfg matches nthreads=1");
+        }
+      } else if (frame == 1) {
+        check(rc < expected_reach, "opt2 blocked reduces reach");
+      } else {
+        check(rc == expected_reach && dc == expected_deg && sc == expected_dist, "opt2 frame 2 matches frame 0");
+      }
+    }
+    tupu_close(s);
+  }
+}
+
 int main(void) {
   test_1000_frames();
   test_budget_exceeded();
@@ -1319,6 +1405,7 @@ int main(void) {
   test_shuffle_golden_order_independence();
   test_ord_and_sparse_bitset_across_resets();
   test_lazy_bitset_bounds_check();
+  test_opt2_single_thread_and_comp_scoping();
   printf("api_test failures=%d\n", fails);
   return fails == 0 ? 0 : 1;
 }

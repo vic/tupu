@@ -58,9 +58,15 @@ typedef struct Engine {
   size_t *delta_by_comp; /* [delta.n]: variant indices grouped by comp */
   size_t *delta_first;   /* [strata.ncomps + 1]: slice per comp */
   bool *comp_recursive;  /* [strata.ncomps]: true iff any rel in comp is recursive */
+  size_t *comp_reads;    /* distinct relations read by ST_ATOM in each comp */
+  size_t *comp_reads_first;
+  size_t *comp_writes;   /* distinct head relations written in each comp */
+  size_t *comp_writes_first;
+  size_t *comp_syncs;    /* distinct relations with indexed lookups in each comp */
+  size_t *comp_syncs_first;
   uint32_t *before;      /* [prog->rels.n + 1]: reusable round row-count snapshot */
-  uint64_t budget, added;
-  bool prov;
+  uint64_t budget, added, round_added;
+  bool prov, direct_insert;
   /* execution state */
   I128 *vars;
   uint8_t *kbuf; /* packed index key scratch */

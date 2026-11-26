@@ -168,6 +168,20 @@ static Status buf_push(Engine *x, const Table *ht, uint64_t h, const I128 *vals,
   return jobset_insert(x, k);
 }
 
+static Status direct_add(Engine *x, Table *ht, uint64_t h, const I128 *vals) {
+  bool added = false;
+  if (table_add(ht, h, vals, ORG_RULE, (uint32_t)x->cur->rule->index, x->round, NULL, 0, &added, x->err) != STATUS_OK)
+    return STATUS_ERR;
+  if (added) {
+    x->rows_derived++;
+    x->round_added++;
+#ifdef TUPU_COUNTERS
+    x->rel_derived[x->cur->rule->head.rel]++;
+#endif
+  }
+  return STATUS_OK;
+}
+
 static Status emit_head(Engine *x) {
   const Rule *r = x->cur->rule;
   I128 *hv = x->hv;
@@ -183,9 +197,10 @@ static Status emit_head(Engine *x) {
     return STATUS_OK;
   }
   x->derivations++;
-  const Table *ht = &x->tabs[r->head.rel];
+  Table *ht = &x->tabs[r->head.rel];
   uint64_t h = table_hash_row(ht, hv); /* the one hash of this derivation (F3): the table test, the job set and the merge use it */
   if (table_contains_h(ht, h, hv)) return STATUS_OK;
+  if (x->direct_insert) return direct_add(x, ht, h, hv);
   if (jobset_has(x, ht, h, hv)) return STATUS_OK;
   x->rows_derived++;
   return buf_push(x, ht, h, hv, x->body, x->prov ? x->cur->natoms : 0);
@@ -295,7 +310,7 @@ static Status step_atom(Engine *x, const Plan *p, int k, PlanEnd end) {
   uint32_t a = lower_bound(ids, bk->n, lo), b = lower_bound(ids, bk->n, hi); /* the range is a contiguous span of the bucket */
   if (k + 1 == p->nsteps && end == END_HEAD && x->mode == MODE_DERIVE && !x->prov) {
     const Rule *r = x->cur->rule;
-    const Table *ht = &x->tabs[r->head.rel];
+    Table *ht = &x->tabs[r->head.rel];
     if (ht->fast2 && ix->nf == 1 && s->args[ix->fcols[0]].k == AS_FREE && t->kind[ix->fcols[0]] == BASE_SYMBOL &&
         (r->head.args[0]->kind == EX_VAR || r->head.args[0]->kind == EX_SYM) &&
         (r->head.args[1]->kind == EX_VAR || r->head.args[1]->kind == EX_SYM)) {
@@ -318,6 +333,11 @@ static Status step_atom(Engine *x, const Plan *p, int k, PlanEnd end) {
             uint64_t fkey = ((uint64_t)c0 << 32) | (uint64_t)fv;
             uint64_t h = mix64(fkey);
             hv[1] = (I128)fv;
+            if (x->direct_insert) {
+              if (direct_add(x, ht, h, hv) != STATUS_OK) return STATUS_ERR;
+              brow = (ht->bits != NULL && c0 < ht->bit_nsyms) ? ht->bits[c0] : NULL;
+              continue;
+            }
             if (jobset_has(x, ht, h, hv)) continue;
             x->rows_derived++;
             if (buf_push(x, ht, h, hv, NULL, 0) != STATUS_OK) return STATUS_ERR;
@@ -333,6 +353,10 @@ static Status step_atom(Engine *x, const Plan *p, int k, PlanEnd end) {
             uint64_t h = mix64(fkey);
             if (var0) hv[0] = (I128)v0;
             if (var1) hv[1] = (I128)v1;
+            if (x->direct_insert) {
+              if (direct_add(x, ht, h, hv) != STATUS_OK) return STATUS_ERR;
+              continue;
+            }
             if (jobset_has(x, ht, h, hv)) continue;
             x->rows_derived++;
             if (buf_push(x, ht, h, hv, NULL, 0) != STATUS_OK) return STATUS_ERR;
@@ -350,6 +374,10 @@ static Status step_atom(Engine *x, const Plan *p, int k, PlanEnd end) {
         if (table_contains_fast2(ht, fkey, h)) continue;
         if (var0) hv[0] = (I128)v0;
         if (var1) hv[1] = (I128)v1;
+        if (x->direct_insert) {
+          if (direct_add(x, ht, h, hv) != STATUS_OK) return STATUS_ERR;
+          continue;
+        }
         if (jobset_has(x, ht, h, hv)) continue;
         x->rows_derived++;
         if (buf_push(x, ht, h, hv, NULL, 0) != STATUS_OK) return STATUS_ERR;
@@ -489,6 +517,12 @@ void engine_close(Engine *x) {
   free(x->delta_by_comp);
   free(x->delta_first);
   free(x->comp_recursive);
+  free(x->comp_reads);
+  free(x->comp_reads_first);
+  free(x->comp_writes);
+  free(x->comp_writes_first);
+  free(x->comp_syncs);
+  free(x->comp_syncs_first);
   free(x->before);
 #ifdef TUPU_COUNTERS
   free(x->rel_derived);
@@ -521,6 +555,118 @@ static void group_variants_by_comp(const Variants *vs, int ncomps, size_t *first
   for (size_t i = 0; i < vs->n; i++) by_comp[first[vs->p[i].comp]++] = i;
   for (int comp = ncomps; comp > 0; comp--) first[comp] = first[comp - 1];
   first[0] = 0;
+}
+
+static void collect_plan_rels(const Plan *p, int comp, int *mark_read, int *mark_sync, size_t *nread, size_t *nsync,
+                              size_t *out_read, size_t *out_sync) {
+  for (int i = 0; i < p->nsteps; i++) {
+    const Step *s = &p->steps[i];
+    switch (s->kind) {
+    case ST_ATOM:
+      if (mark_read[s->rel] != comp) {
+        mark_read[s->rel] = comp;
+        if (out_read != NULL) out_read[*nread] = (size_t)s->rel;
+        (*nread)++;
+      }
+      if (s->idx != NULL && mark_sync[s->rel] != comp) {
+        mark_sync[s->rel] = comp;
+        if (out_sync != NULL) out_sync[*nsync] = (size_t)s->rel;
+        (*nsync)++;
+      }
+      break;
+    case ST_NEG:
+      if (s->idx != NULL && mark_sync[s->rel] != comp) {
+        mark_sync[s->rel] = comp;
+        if (out_sync != NULL) out_sync[*nsync] = (size_t)s->rel;
+        (*nsync)++;
+      }
+      break;
+    case ST_AGG:
+      collect_plan_rels(s->sub, comp, mark_read, mark_sync, nread, nsync, out_read, out_sync);
+      break;
+    case ST_FILTER:
+    case ST_BIND:
+      break;
+    }
+  }
+}
+
+static Status build_comp_rel_lists(Engine *x, size_t nrels, Err *e) {
+  int ncomps = x->strata.ncomps;
+  x->comp_reads_first = calloc((size_t)ncomps + 1, sizeof *x->comp_reads_first);
+  x->comp_writes_first = calloc((size_t)ncomps + 1, sizeof *x->comp_writes_first);
+  x->comp_syncs_first = calloc((size_t)ncomps + 1, sizeof *x->comp_syncs_first);
+  int *mark_read = malloc((nrels + 1) * sizeof *mark_read);
+  int *mark_write = malloc((nrels + 1) * sizeof *mark_write);
+  int *mark_sync = malloc((nrels + 1) * sizeof *mark_sync);
+  if (x->comp_reads_first == NULL || x->comp_writes_first == NULL || x->comp_syncs_first == NULL ||
+      mark_read == NULL || mark_write == NULL || mark_sync == NULL) {
+    free(mark_read);
+    free(mark_write);
+    free(mark_sync);
+    return err_oom(e);
+  }
+  for (size_t r = 0; r < nrels; r++) {
+    mark_read[r] = -1;
+    mark_write[r] = -1;
+    mark_sync[r] = -1;
+  }
+  size_t total_read = 0, total_write = 0, total_sync = 0;
+  for (int comp = 0; comp < ncomps; comp++) {
+    x->comp_reads_first[comp] = total_read;
+    x->comp_writes_first[comp] = total_write;
+    x->comp_syncs_first[comp] = total_sync;
+    for (size_t k = x->naive_first[comp]; k < x->naive_first[comp + 1]; k++) {
+      const Variant *v = &x->naive.p[x->naive_by_comp[k]];
+      int hrel = v->rule->head.rel;
+      if (mark_write[hrel] != comp) {
+        mark_write[hrel] = comp;
+        total_write++;
+      }
+      collect_plan_rels(&v->plan, comp, mark_read, mark_sync, &total_read, &total_sync, NULL, NULL);
+    }
+    for (size_t k = x->delta_first[comp]; k < x->delta_first[comp + 1]; k++) {
+      const Variant *v = &x->delta.p[x->delta_by_comp[k]];
+      collect_plan_rels(&v->plan, comp, mark_read, mark_sync, &total_read, &total_sync, NULL, NULL);
+    }
+  }
+  x->comp_reads_first[ncomps] = total_read;
+  x->comp_writes_first[ncomps] = total_write;
+  x->comp_syncs_first[ncomps] = total_sync;
+  x->comp_reads = malloc((total_read + 1) * sizeof *x->comp_reads);
+  x->comp_writes = malloc((total_write + 1) * sizeof *x->comp_writes);
+  x->comp_syncs = malloc((total_sync + 1) * sizeof *x->comp_syncs);
+  if (x->comp_reads == NULL || x->comp_writes == NULL || x->comp_syncs == NULL) {
+    free(mark_read);
+    free(mark_write);
+    free(mark_sync);
+    return err_oom(e);
+  }
+  for (size_t r = 0; r < nrels; r++) {
+    mark_read[r] = -1;
+    mark_write[r] = -1;
+    mark_sync[r] = -1;
+  }
+  size_t pos_read = 0, pos_write = 0, pos_sync = 0;
+  for (int comp = 0; comp < ncomps; comp++) {
+    for (size_t k = x->naive_first[comp]; k < x->naive_first[comp + 1]; k++) {
+      const Variant *v = &x->naive.p[x->naive_by_comp[k]];
+      int hrel = v->rule->head.rel;
+      if (mark_write[hrel] != comp) {
+        mark_write[hrel] = comp;
+        x->comp_writes[pos_write++] = (size_t)hrel;
+      }
+      collect_plan_rels(&v->plan, comp, mark_read, mark_sync, &pos_read, &pos_sync, x->comp_reads, x->comp_syncs);
+    }
+    for (size_t k = x->delta_first[comp]; k < x->delta_first[comp + 1]; k++) {
+      const Variant *v = &x->delta.p[x->delta_by_comp[k]];
+      collect_plan_rels(&v->plan, comp, mark_read, mark_sync, &pos_read, &pos_sync, x->comp_reads, x->comp_syncs);
+    }
+  }
+  free(mark_read);
+  free(mark_write);
+  free(mark_sync);
+  return STATUS_OK;
 }
 
 static Status engine_open_common(Engine *x, Program *p, const char *facts_dir, uint64_t budget, bool prov, size_t nthreads, Err *e) {
@@ -583,6 +729,7 @@ static Status engine_open_common(Engine *x, Program *p, const char *facts_dir, u
     return err_oom(e);
   group_variants_by_comp(&x->naive, x->strata.ncomps, x->naive_first, x->naive_by_comp);
   group_variants_by_comp(&x->delta, x->strata.ncomps, x->delta_first, x->delta_by_comp);
+  if (build_comp_rel_lists(x, n, e) != STATUS_OK) return STATUS_ERR;
   for (size_t r = 0; r < n; r++)
     if (x->strata.recursive[r]) x->comp_recursive[x->strata.comp[r]] = true;
   for (size_t i = 0; i < n; i++)
@@ -618,6 +765,17 @@ static Status sync_indexes(Engine *x, int comp) {
   for (size_t r = 0; r < p->rels.n; r++) {
     Table *t = &x->tabs[r];
     if (t->count == 0 || x->strata.comp[r] > comp) continue;
+    for (int i = 0; i < t->nidx; i++)
+      if (index_sync(t->idx[i], t, x->err) != STATUS_OK) return STATUS_ERR;
+  }
+  return STATUS_OK;
+}
+
+static Status sync_comp_indexes(Engine *x, int comp) {
+  size_t lo = x->comp_syncs_first[comp], hi = x->comp_syncs_first[comp + 1];
+  for (size_t k = lo; k < hi; k++) {
+    Table *t = &x->tabs[x->comp_syncs[k]];
+    if (t->count == 0) continue;
     for (int i = 0; i < t->nidx; i++)
       if (index_sync(t->idx[i], t, x->err) != STATUS_OK) return STATUS_ERR;
   }
@@ -964,11 +1122,55 @@ static Status merge(Engine *x, JobList *jl, uint32_t round, uint64_t *new_rows) 
   return STATUS_OK;
 }
 
+static Status run_round_single(Engine *x, const Variants *vs, const size_t *by_comp, size_t first, size_t end, uint64_t *new_rows) {
+  x->direct_insert = true;
+  x->chunk_step = -1;
+  x->round_added = 0;
+  Status st = STATUS_OK;
+  for (size_t idx = first; idx < end && st == STATUS_OK; idx++) {
+    const Variant *v = &vs->p[by_comp[idx]];
+    bool empty = false;
+    for (int s = 0; s < v->plan.nsteps; s++) {
+      if (v->plan.steps[s].kind == ST_ATOM) {
+        uint32_t slo, shi;
+        range_of(x, &v->plan.steps[s], &slo, &shi);
+        if (slo == shi) {
+          empty = true;
+          break;
+        }
+      }
+    }
+    if (empty) continue;
+    x->cur = v;
+#ifdef TUPU_COUNTERS
+    uint64_t p0 = x->probes, d0 = x->derivations;
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+#endif
+    st = ex_run(x, &v->plan, 0, END_HEAD);
+#ifdef TUPU_COUNTERS
+    struct timespec t1;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    x->rule_probes[v->rule->index] += x->probes - p0;
+    x->rule_derivations[v->rule->index] += x->derivations - d0;
+    x->rule_ns[v->rule->index] += (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000u + (uint64_t)t1.tv_nsec - (uint64_t)t0.tv_nsec;
+#endif
+  }
+  x->direct_insert = false;
+  *new_rows = x->round_added;
+  if (st != STATUS_OK) return st;
+  x->added += x->round_added;
+#ifndef MUTANT_NOBUDGET
+  if (x->added > x->budget) return err_set(x->err, CODE_DATALOG_BUDGET, NULL, 0, "the row budget of %llu rows is exceeded", (unsigned long long)x->budget);
+#endif
+  return STATUS_OK;
+}
+
 Status engine_eval(Engine *x, Err *e) {
   x->err = e;
+#ifdef TUPU_COUNTERS
   Program *p = x->prog;
   size_t n = p->rels.n;
-#ifdef TUPU_COUNTERS
   free(x->rel_derived);
   free(x->comp_rounds);
   free(x->comp_ns);
@@ -1019,24 +1221,36 @@ Status engine_eval(Engine *x, Err *e) {
     struct timespec t0;
     clock_gettime(CLOCK_MONOTONIC, &t0);
 #endif
+    size_t rlo = x->comp_reads_first[comp], rhi = x->comp_reads_first[comp + 1];
+    size_t wlo = x->comp_writes_first[comp], whi = x->comp_writes_first[comp + 1];
+    bool single = x->nthreads == 1 && !x->prov;
     for (;;) {
-      if (sync_indexes(x, comp) != STATUS_OK) return STATUS_ERR;
+      if (sync_comp_indexes(x, comp) != STATUS_OK) return STATUS_ERR;
       /* ranges at the start of the round: delta = rows added by the previous round */
-      for (size_t r = 0; r < n; r++) x->rr[r].cnt = x->tabs[r].count;
+      for (size_t k = rlo; k < rhi; k++) {
+        size_t r = x->comp_reads[k];
+        x->rr[r].cnt = x->tabs[r].count;
+      }
       x->round = round;
-      for (size_t r = 0; r < n; r++) x->before[r] = x->tabs[r].count;
+      for (size_t k = wlo; k < whi; k++) {
+        size_t r = x->comp_writes[k];
+        x->before[r] = x->tabs[r].count;
+      }
       uint64_t added = 0;
-      Status st = run_round(x, round == 1 ? &x->naive : &x->delta,
-                            round == 1 ? x->naive_by_comp : x->delta_by_comp,
-                            round == 1 ? nfirst : x->delta_first[comp],
-                            round == 1 ? nend : x->delta_first[comp + 1],
-                            round, &added);
+      const Variants *vs = round == 1 ? &x->naive : &x->delta;
+      const size_t *bc = round == 1 ? x->naive_by_comp : x->delta_by_comp;
+      size_t rfirst = round == 1 ? nfirst : x->delta_first[comp];
+      size_t rend = round == 1 ? nend : x->delta_first[comp + 1];
+      Status st = single ? run_round_single(x, vs, bc, rfirst, rend, &added) : run_round(x, vs, bc, rfirst, rend, round, &added);
       if (st != STATUS_OK) return STATUS_ERR;
       x->rounds++;
 #ifdef TUPU_COUNTERS
       x->comp_rounds[comp]++;
 #endif
-      for (size_t r = 0; r < n; r++) x->rr[r].ds = x->before[r];
+      for (size_t k = wlo; k < whi; k++) {
+        size_t r = x->comp_writes[k];
+        x->rr[r].ds = x->before[r];
+      }
       if (added == 0 || !x->comp_recursive[comp]) break;
       round++;
     }
