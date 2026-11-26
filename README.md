@@ -29,7 +29,7 @@ Typed `.decl` relations with `symbol` and `number` columns, subtypes and unions,
 
 ## C library
 
-To run repeated checks in-process without re-parsing or reading files from disk, link `libtupu.a` and include `include/tupu.h`. One `TupuSession` keeps the parsed program, plans, tables, and worker thread pool warm across transactions: `tupu_reset` clears rows without freeing buffers, `tupu_add_row` inserts facts, `tupu_eval` runs semi-naive evaluation, and `tupu_rel_read_row` reads derived rows. On `tests/api_test.c`, 1,000 consecutive `tc` frames run in 7.57 ms (7.6 µs per frame) with 0 KB RSS growth.
+To run repeated checks in-process without re-parsing or reading files from disk, link `libtupu.a` and include `include/tupu.h`. One `TupuSession` keeps the parsed program, plans, tables, and worker thread pool warm across transactions: `tupu_reset` clears rows without freeing buffers, `tupu_add_row` inserts facts, `tupu_eval` runs semi-naive evaluation, and `tupu_rel_read_row` reads derived rows. On `tests/api_test.c`, 1,000 consecutive `tc` frames run in 6.74 ms (6.7 µs per frame) with 0 KB RSS growth.
 
 ## Benchmarks
 
@@ -37,14 +37,14 @@ tupu runs programs directly with no C++ or Rust compilation step. Even so, it be
 
 | benchmark | tupu (interpreter) | Soufflé (compiled) | FlowLog (compiled) |
 |---|---|---|---|
-| `tc -j 1` | 0.21 s / 8.5 MB | 0.95 s / 10.0 MB | 4.46 s / 326.8 MB |
-| `tc -j 6` | 0.14 s / 8.9 MB | 0.97 s / 10.0 MB | 2.42 s / 675.5 MB |
-| `andersen -j 1` | 0.99 s / 43.5 MB | 7.20 s / 24.7 MB | > 40 s (timeout) |
-| `andersen -j 6` | 0.59 s / 49.1 MB | 7.27 s / 24.8 MB | > 15 s (timeout) |
-| `rsg -j 1` | 0.09 s / 13.5 MB | 0.16 s / 10.1 MB | 0.37 s / 59.9 MB |
+| `tc -j 1` | 0.17 s / 8.0 MB | 0.95 s / 10.0 MB | 4.46 s / 326.8 MB |
+| `tc -j 6` | 0.17 s / 8.6 MB | 0.97 s / 10.0 MB | 2.42 s / 675.5 MB |
+| `andersen -j 1` | 0.75 s / 41.1 MB | 7.20 s / 24.7 MB | > 40 s (timeout) |
+| `andersen -j 6` | 0.51 s / 46.6 MB | 7.27 s / 24.8 MB | > 15 s (timeout) |
+| `rsg -j 1` | 0.09 s / 13.6 MB | 0.16 s / 10.1 MB | 0.37 s / 59.9 MB |
 | `rsg -j 6` | 0.09 s / 14.6 MB | 0.17 s / 10.3 MB | 0.20 s / 147.8 MB |
 
-Peak memory on `tc` is now lower than compiled Soufflé; `andersen` RSS dropped from 65 MB to 43.5 MB via dense 2D bitset deduplication. The tupu cells were measured again on 2026-11-26 at commit db58e6a4 (AMD Ryzen 5 7530U, `bench/row.sh`, quiet host); the comparator cells are from the earlier run.
+Peak memory on `tc` is now lower than compiled Soufflé; `andersen` RSS dropped from 65 MB to 41.1 MB via dense 2D bitset deduplication and single-thread direct insertion. The tupu cells were measured again on 2026-11-26 at commit 98f40203 (AMD Ryzen 5 7530U, `hyperfine` median of 3 runs); the comparator cells are from the earlier run.
 
 ## Status
 
