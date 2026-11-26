@@ -484,6 +484,12 @@ void engine_close(Engine *x) {
   free(x->cells);
   free(x->body);
   free(x->rr);
+  free(x->naive_by_comp);
+  free(x->naive_first);
+  free(x->delta_by_comp);
+  free(x->delta_first);
+  free(x->comp_recursive);
+  free(x->before);
 #ifdef TUPU_COUNTERS
   free(x->rel_derived);
   free(x->comp_rounds);
@@ -507,6 +513,14 @@ static Status load_program_facts(Engine *x, Err *e) {
       return STATUS_ERR;
   }
   return STATUS_OK;
+}
+
+static void group_variants_by_comp(const Variants *vs, int ncomps, size_t *first, size_t *by_comp) {
+  for (size_t i = 0; i < vs->n; i++) first[vs->p[i].comp + 1]++;
+  for (int comp = 0; comp < ncomps; comp++) first[comp + 1] += first[comp];
+  for (size_t i = 0; i < vs->n; i++) by_comp[first[vs->p[i].comp]++] = i;
+  for (int comp = ncomps; comp > 0; comp--) first[comp] = first[comp - 1];
+  first[0] = 0;
 }
 
 static Status engine_open_common(Engine *x, Program *p, const char *facts_dir, uint64_t budget, bool prov, size_t nthreads, Err *e) {
@@ -558,6 +572,19 @@ static Status engine_open_common(Engine *x, Program *p, const char *facts_dir, u
   if (load_program_facts(x, e) != STATUS_OK) return STATUS_ERR;
   if (sym_build_rank(&p->syms, e) != STATUS_OK) return STATUS_ERR;
   if (plan_program(p, &x->strata, x->tabs, &x->naive, &x->delta, e) != STATUS_OK) return STATUS_ERR;
+  x->naive_first = calloc((size_t)x->strata.ncomps + 1, sizeof *x->naive_first);
+  x->delta_first = calloc((size_t)x->strata.ncomps + 1, sizeof *x->delta_first);
+  x->comp_recursive = calloc((size_t)x->strata.ncomps + 1, sizeof *x->comp_recursive);
+  x->naive_by_comp = malloc((x->naive.n + 1) * sizeof *x->naive_by_comp);
+  x->delta_by_comp = malloc((x->delta.n + 1) * sizeof *x->delta_by_comp);
+  x->before = malloc((n + 1) * sizeof *x->before);
+  if (x->naive_first == NULL || x->delta_first == NULL || x->comp_recursive == NULL || x->naive_by_comp == NULL ||
+      x->delta_by_comp == NULL || x->before == NULL)
+    return err_oom(e);
+  group_variants_by_comp(&x->naive, x->strata.ncomps, x->naive_first, x->naive_by_comp);
+  group_variants_by_comp(&x->delta, x->strata.ncomps, x->delta_first, x->delta_by_comp);
+  for (size_t r = 0; r < n; r++)
+    if (x->strata.recursive[r]) x->comp_recursive[x->strata.comp[r]] = true;
   for (size_t i = 0; i < n; i++)
     if (table_enable_bitset(&x->tabs[i], (uint32_t)p->syms.n, e) != STATUS_OK) return STATUS_ERR;
   return STATUS_OK;
@@ -589,8 +616,8 @@ Status engine_reset(Engine *x, Err *e) {
 static Status sync_indexes(Engine *x, int comp) {
   Program *p = x->prog;
   for (size_t r = 0; r < p->rels.n; r++) {
-    if (x->strata.comp[r] > comp) continue;
     Table *t = &x->tabs[r];
+    if (t->count == 0 || x->strata.comp[r] > comp) continue;
     for (int i = 0; i < t->nidx; i++)
       if (index_sync(t->idx[i], t, x->err) != STATUS_OK) return STATUS_ERR;
   }
@@ -813,13 +840,12 @@ static void tpool_destroy(struct ThreadPool *tp) {
 }
 
 /* build the jobs of this round, run them on up to x->nthreads threads, then merge the buffers in job order */
-static Status run_round(Engine *x, const Variants *vs, int comp, uint32_t round, uint64_t *new_rows) {
+static Status run_round(Engine *x, const Variants *vs, const size_t *by_comp, size_t first, size_t end, uint32_t round, uint64_t *new_rows) {
   JobList *jl = &x->jl;
   jl->n = 0;
   Status st = STATUS_OK;
-  for (size_t i = 0; i < vs->n && st == STATUS_OK; i++) {
-    const Variant *v = &vs->p[i];
-    if (v->comp != comp) continue;
+  for (size_t idx = first; idx < end && st == STATUS_OK; idx++) {
+    const Variant *v = &vs->p[by_comp[idx]];
     int fa = first_atom_step(v);
     if (fa < 0) {
       st = jobs_push(jl, v, -1, 0, 0, x->err);
@@ -837,6 +863,10 @@ static Status run_round(Engine *x, const Variants *vs, int comp, uint32_t round,
   if (st != STATUS_OK) {
     jl->n = 0;
     return st;
+  }
+  if (jl->n == 0) {
+    *new_rows = 0;
+    return STATUS_OK;
   }
   if (tpool_ensure(x, x->err) != STATUS_OK) {
     jl->n = 0;
@@ -948,10 +978,24 @@ Status engine_eval(Engine *x, Err *e) {
 #else
     int comp = ci;
 #endif
-    bool has_rules = false;
-    for (size_t i = 0; i < x->naive.n; i++)
-      if (x->naive.p[i].comp == comp) has_rules = true;
-    if (!has_rules) continue;
+    size_t nfirst = x->naive_first[comp], nend = x->naive_first[comp + 1];
+    if (nfirst == nend) continue;
+    bool any_work = false;
+    for (size_t k = nfirst; k < nend; k++) {
+      const Variant *v = &x->naive.p[x->naive_by_comp[k]];
+      int fa = first_atom_step(v);
+      if (fa < 0 || x->tabs[v->plan.steps[fa].rel].count > 0) {
+        any_work = true;
+        break;
+      }
+    }
+    if (!any_work) {
+      x->rounds++;
+#ifdef TUPU_COUNTERS
+      x->comp_rounds[comp]++;
+#endif
+      continue;
+    }
     uint32_t round = 1;
 #ifdef TUPU_COUNTERS
     struct timespec t0;
@@ -962,25 +1006,20 @@ Status engine_eval(Engine *x, Err *e) {
       /* ranges at the start of the round: delta = rows added by the previous round */
       for (size_t r = 0; r < n; r++) x->rr[r].cnt = x->tabs[r].count;
       x->round = round;
-      uint32_t *before = malloc((n + 1) * sizeof *before);
-      if (before == NULL) return err_oom(e);
-      for (size_t r = 0; r < n; r++) before[r] = x->tabs[r].count;
+      for (size_t r = 0; r < n; r++) x->before[r] = x->tabs[r].count;
       uint64_t added = 0;
-      Status st = run_round(x, round == 1 ? &x->naive : &x->delta, comp, round, &added);
-      if (st != STATUS_OK) {
-        free(before);
-        return STATUS_ERR;
-      }
+      Status st = run_round(x, round == 1 ? &x->naive : &x->delta,
+                            round == 1 ? x->naive_by_comp : x->delta_by_comp,
+                            round == 1 ? nfirst : x->delta_first[comp],
+                            round == 1 ? nend : x->delta_first[comp + 1],
+                            round, &added);
+      if (st != STATUS_OK) return STATUS_ERR;
       x->rounds++;
 #ifdef TUPU_COUNTERS
       x->comp_rounds[comp]++;
 #endif
-      for (size_t r = 0; r < n; r++) x->rr[r].ds = before[r];
-      free(before);
-      bool recursive = false;
-      for (size_t r = 0; r < n; r++)
-        if (x->strata.comp[r] == comp && x->strata.recursive[r]) recursive = true;
-      if (added == 0 || !recursive) break;
+      for (size_t r = 0; r < n; r++) x->rr[r].ds = x->before[r];
+      if (added == 0 || !x->comp_recursive[comp]) break;
       round++;
     }
 #ifdef TUPU_COUNTERS

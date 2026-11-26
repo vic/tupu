@@ -83,6 +83,7 @@ Status table_enable_bitset(Table *t, uint32_t nsyms, Err *e) {
    of a direct index is the symbol of a synced row; so those are cleared row by row (X28-bb: whole-matrix memsets were
    40 GB per load of the stable tree). */
 void table_clear(Table *t) {
+  if (t->count == 0) return;
   if (t->bits != NULL && t->count > 0) {
     const uint32_t *c0 = (const uint32_t *)t->col[0];
     const uint32_t *c1 = (const uint32_t *)t->col[1];

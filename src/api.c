@@ -12,7 +12,18 @@ struct TupuSession {
   Err err;
   char *src_copy;
   uint32_t ranked_nsyms;
+  int *rel_hash;
+  size_t rel_hash_mask;
 };
+
+static uint64_t rel_name_hash(const char *s, size_t n) {
+  uint64_t h = 14695981039346656037ULL;
+  for (size_t i = 0; i < n; i++) {
+    h ^= (uint8_t)s[i];
+    h *= 1099511628211ULL;
+  }
+  return h;
+}
 
 static void report_err(const Err *e, int *err_code, char *err_buf, size_t err_cap) {
   if (err_code != NULL) *err_code = (int)e->code;
@@ -69,8 +80,26 @@ TupuSession *tupu_open_ex(const char *src, size_t len, const char *name, uint64_
     st = engine_open(&s->eng, &s->prog, NULL, budget, prov != 0, nthreads, &s->err);
     eng_open = true;
   }
+  if (st == STATUS_OK) {
+    size_t cap = 16;
+    while (cap < s->prog.rels.n * 2) cap *= 2;
+    s->rel_hash = malloc(cap * sizeof *s->rel_hash);
+    if (s->rel_hash == NULL) {
+      st = err_oom(&s->err);
+    } else {
+      for (size_t i = 0; i < cap; i++) s->rel_hash[i] = -1;
+      s->rel_hash_mask = cap - 1;
+      for (size_t i = 0; i < s->prog.rels.n; i++) {
+        const Relation *r = &s->prog.rels.p[i];
+        size_t idx = (size_t)(rel_name_hash(r->name.s, r->name.n) & s->rel_hash_mask);
+        while (s->rel_hash[idx] != -1) idx = (idx + 1) & s->rel_hash_mask;
+        s->rel_hash[idx] = (int)i;
+      }
+    }
+  }
   if (st != STATUS_OK) {
     report_err(&s->err, err_code, err_buf, err_cap);
+    free(s->rel_hash);
     if (eng_open) engine_close(&s->eng);
     program_free(&s->prog);
     free(s->src_copy);
@@ -94,6 +123,7 @@ int tupu_last_err_code(const TupuSession *s) {
 
 void tupu_close(TupuSession *s) {
   if (s == NULL) return;
+  free(s->rel_hash);
   engine_close(&s->eng);
   program_free(&s->prog);
   free(s->src_copy);
@@ -110,10 +140,14 @@ int tupu_reset(TupuSession *s) {
 }
 
 int tupu_rel_id(const TupuSession *s, const char *name) {
-  if (s == NULL || name == NULL) return -1;
+  if (s == NULL || name == NULL || s->rel_hash == NULL) return -1;
   size_t n = strlen(name);
-  for (size_t i = 0; i < s->prog.rels.n; i++) {
-    if (s->prog.rels.p[i].name.n == n && memcmp(s->prog.rels.p[i].name.s, name, n) == 0) return (int)i;
+  size_t idx = (size_t)(rel_name_hash(name, n) & s->rel_hash_mask);
+  while (s->rel_hash[idx] != -1) {
+    int id = s->rel_hash[idx];
+    const Name *rn = &s->prog.rels.p[id].name;
+    if (rn->n == n && memcmp(rn->s, name, n) == 0) return id;
+    idx = (idx + 1) & s->rel_hash_mask;
   }
   return -1;
 }

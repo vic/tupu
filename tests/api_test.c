@@ -301,6 +301,101 @@ static void test_i128_text(void) {
   check(zero_ok && n == 2 && memcmp(text, "-1", 2) == 0, "i128 format zero and minus one");
 }
 
+static void test_sparse_multistratum_frames(void) {
+  size_t cap = 32768;
+  char *prog = malloc(cap);
+  check(prog != NULL, "alloc sparse prog");
+  if (prog == NULL) return;
+  size_t pos = 0;
+  for (int i = 0; i < 100; i++) {
+    int n = snprintf(prog + pos, cap - pos,
+                     ".decl in%d(x: symbol)\n"
+                     ".input in%d\n"
+                     ".decl out%d(x: symbol)\n"
+                     ".output out%d\n"
+                     "out%d(x) :- in%d(x).\n",
+                     i, i, i, i, i, i);
+    check(n > 0 && (size_t)n < cap - pos, "format sparse stratum");
+    if (n <= 0 || (size_t)n >= cap - pos) {
+      free(prog);
+      return;
+    }
+    pos += (size_t)n;
+  }
+  int tail_n = snprintf(prog + pos, cap - pos,
+                        ".decl bad(x: symbol)\n"
+                        ".input bad\n"
+                        ".decl ok(x: symbol)\n"
+                        ".output ok\n"
+                        "ok(x) :- out0(x), !bad(x).\n"
+                        ".decl edge(x: symbol, y: symbol)\n"
+                        ".input edge\n"
+                        ".decl tc(x: symbol, y: symbol)\n"
+                        ".output tc\n"
+                        "tc(x, y) :- edge(x, y).\n"
+                        "tc(x, z) :- tc(x, y), edge(y, z).\n");
+  check(tail_n > 0 && (size_t)tail_n < cap - pos, "format sparse tail");
+  if (tail_n <= 0 || (size_t)tail_n >= cap - pos) {
+    free(prog);
+    return;
+  }
+  pos += (size_t)tail_n;
+
+  char ebuf[256];
+  int ecode = -1;
+  TupuSession *s = tupu_open(prog, pos, "sparse.dl", 1000000, 1, ebuf, sizeof ebuf, &ecode);
+  free(prog);
+  check(s != NULL && ecode == 0, "tupu_open sparse");
+  if (s == NULL) return;
+
+  int in0_id = tupu_rel_id(s, "in0");
+  int in99_id = tupu_rel_id(s, "in99");
+  int out0_id = tupu_rel_id(s, "out0");
+  int out99_id = tupu_rel_id(s, "out99");
+  int edge_id = tupu_rel_id(s, "edge");
+  int tc_id = tupu_rel_id(s, "tc");
+  int ok_id = tupu_rel_id(s, "ok");
+  check(in0_id >= 0 && in99_id >= 0 && out0_id >= 0 && out99_id >= 0 && edge_id >= 0 && tc_id >= 0 && ok_id >= 0,
+        "sparse rel ids found");
+  check(tupu_rel_id(s, "missing") == -1, "sparse missing rel returns -1");
+
+  struct timespec t0, t1;
+  clock_gettime(CLOCK_MONOTONIC, &t0);
+  long rss_f10 = -1, rss_f500 = -1;
+
+  for (int frame = 1; frame <= 500; frame++) {
+    check(tupu_reset(s) == 0, "sparse tupu_reset");
+    uint32_t sym[6];
+    for (int i = 0; i < 6; i++) {
+      char sbuf[32];
+      int sn = snprintf(sbuf, sizeof sbuf, "f%d_s%d", frame, i);
+      check(sn > 0 && tupu_intern(s, sbuf, (size_t)sn, &sym[i]) == 0, "sparse tupu_intern");
+    }
+    int64_t r0[1] = { (int64_t)sym[0] };
+    check(tupu_add_row(s, in0_id, r0, 1) == 0, "sparse add in0");
+    for (int i = 0; i < 5; i++) {
+      int64_t erow[2] = { (int64_t)sym[i], (int64_t)sym[i + 1] };
+      check(tupu_add_row(s, edge_id, erow, 2) == 0, "sparse add edge");
+    }
+    check(tupu_eval(s, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "sparse tupu_eval");
+    check(tupu_rel_count(s, out0_id) == 1, "sparse out0 == 1");
+    check(tupu_rel_count(s, ok_id) == 1, "sparse ok == 1");
+    check(tupu_rel_count(s, out99_id) == 0, "sparse out99 == 0");
+    check(tupu_rel_count(s, tc_id) == 15, "sparse tc == 15");
+    if (frame == 10) rss_f10 = read_rss_kb();
+    if (frame == 500) rss_f500 = read_rss_kb();
+  }
+
+  clock_gettime(CLOCK_MONOTONIC, &t1);
+  double ms = (double)(t1.tv_sec - t0.tv_sec) * 1000.0 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
+  check(rss_f10 >= 0 && rss_f500 >= 0, "sparse rss readable");
+#if !defined(__SANITIZE_ADDRESS__)
+  check(rss_f500 <= rss_f10 + 4096, "sparse rss bounded");
+#endif
+  printf("sparse_500_frames_ms=%.2f rss_f10=%ldKB rss_f500=%ldKB\n", ms, rss_f10, rss_f500);
+  tupu_close(s);
+}
+
 int main(void) {
   test_1000_frames();
   test_budget_exceeded();
@@ -309,6 +404,7 @@ int main(void) {
   test_i128_and_replay();
   test_column_kinds();
   test_i128_text();
+  test_sparse_multistratum_frames();
   printf("api_test failures=%d\n", fails);
   return fails == 0 ? 0 : 1;
 }

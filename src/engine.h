@@ -53,6 +53,12 @@ typedef struct Engine {
   Strata strata;
   Table *tabs;
   Variants naive, delta;
+  size_t *naive_by_comp; /* [naive.n]: variant indices grouped by comp */
+  size_t *naive_first;   /* [strata.ncomps + 1]: slice per comp */
+  size_t *delta_by_comp; /* [delta.n]: variant indices grouped by comp */
+  size_t *delta_first;   /* [strata.ncomps + 1]: slice per comp */
+  bool *comp_recursive;  /* [strata.ncomps]: true iff any rel in comp is recursive */
+  uint32_t *before;      /* [prog->rels.n + 1]: reusable round row-count snapshot */
   uint64_t budget, added;
   bool prov;
   /* execution state */
