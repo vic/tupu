@@ -1390,6 +1390,66 @@ static void test_opt2_single_thread_and_comp_scoping(void) {
   }
 }
 
+static void test_opt3_full_range_and_sync_fastpath(void) {
+  static const char *PROG =
+      ".decl base(x: symbol, y: symbol)\n"
+      ".input base\n"
+      ".decl tcl(x: symbol, y: symbol)\n"
+      ".decl tcr(x: symbol, y: symbol)\n"
+      ".decl tc(x: symbol, y: symbol)\n"
+      ".output tc\n"
+      "tcl(x, y) :- base(x, y).\n"
+      "tcl(x, z) :- tcl(x, y), base(y, z).\n"
+      "tcr(x, y) :- base(x, y).\n"
+      "tcr(x, z) :- base(x, y), tcr(y, z).\n"
+      "tc(x, y) :- base(x, y).\n"
+      "tc(x, z) :- tcl(x, y), tcr(y, z).\n";
+
+  char ebuf[256];
+  int ecode = -1;
+  size_t nthreads_list[3] = { 1, 1, 4 };
+  int prov_list[3] = { 0, 1, 0 };
+  uint32_t expected = 0;
+
+  for (int cfg = 0; cfg < 3; cfg++) {
+    TupuSession *s = tupu_open_ex(PROG, strlen(PROG), "opt3.dl", 1000000, prov_list[cfg], nthreads_list[cfg], ebuf,
+                                  sizeof ebuf, &ecode);
+    check(s != NULL && ecode == 0, "opt3 open");
+    if (s == NULL) return;
+    int base_id = tupu_rel_id(s, "base");
+    int tc_id = tupu_rel_id(s, "tc");
+
+    for (int frame = 0; frame < 2; frame++) {
+      check(tupu_reset(s) == 0, "opt3 reset");
+      uint32_t sym[8];
+      for (int i = 0; i < 8; i++) {
+        char buf[16];
+        int n = snprintf(buf, sizeof buf, "v%d", i);
+        check(tupu_intern(s, buf, (size_t)n, &sym[i]) == 0, "opt3 intern");
+      }
+      int limit = frame == 0 ? 7 : 4;
+      for (int i = 0; i < limit; i++) {
+        int64_t row[2] = { (int64_t)sym[i], (int64_t)sym[i + 1] };
+        check(tupu_add_row(s, base_id, row, 2) == 0, "opt3 add base");
+      }
+      check(tupu_eval(s, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "opt3 eval");
+      if (prov_list[cfg]) check(tupu_replay(s, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "opt3 replay");
+      uint32_t cnt = tupu_rel_count(s, tc_id);
+      if (frame == 0) {
+        if (cfg == 0) {
+          expected = cnt;
+          check(cnt == 28, "opt3 frame 0 tc == 28");
+        } else {
+          check(cnt == expected, "opt3 cfg matches nthreads=1");
+        }
+      } else {
+        check(cnt == 10, "opt3 frame 1 tc == 10");
+      }
+    }
+    tupu_close(s);
+  }
+}
+
 int main(void) {
   test_1000_frames();
   test_budget_exceeded();
@@ -1406,6 +1466,7 @@ int main(void) {
   test_ord_and_sparse_bitset_across_resets();
   test_lazy_bitset_bounds_check();
   test_opt2_single_thread_and_comp_scoping();
+  test_opt3_full_range_and_sync_fastpath();
   printf("api_test failures=%d\n", fails);
   return fails == 0 ? 0 : 1;
 }

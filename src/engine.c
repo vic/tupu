@@ -307,7 +307,9 @@ static Status step_atom(Engine *x, const Plan *p, int k, PlanEnd end) {
   if (bk == NULL) return STATUS_OK;
   const uint32_t *ids = bucket_ids(bk);
   const uint8_t *cells = bucket_cells(bk);
-  uint32_t a = lower_bound(ids, bk->n, lo), b = lower_bound(ids, bk->n, hi); /* the range is a contiguous span of the bucket */
+  uint32_t a = lo == 0 ? 0 : lower_bound(ids, bk->n, lo);
+  uint32_t b = hi >= ix->synced ? bk->n : lower_bound(ids, bk->n, hi);
+  if (a >= b) return STATUS_OK;
   if (k + 1 == p->nsteps && end == END_HEAD && x->mode == MODE_DERIVE && !x->prov) {
     const Rule *r = x->cur->rule;
     Table *ht = &x->tabs[r->head.rel];
@@ -325,17 +327,19 @@ static Status step_atom(Engine *x, const Plan *p, int k, PlanEnd end) {
       x->derivations += (uint64_t)(b - a);
       if (ht->bits != NULL) {
         if (!var0 && var1) {
-          const uint64_t *brow = c0 < ht->bit_nsyms ? ht->bits[c0] : NULL;
+          uint32_t bit_n = ht->bit_nsyms;
+          const uint64_t *brow = c0 < bit_n ? ht->bits[c0] : NULL;
           for (uint32_t i = b; i-- > a;) {
             uint32_t fv;
             memcpy(&fv, cells + (size_t)i * sizeof(uint32_t), sizeof fv);
-            if (brow != NULL && fv < ht->bit_nsyms && ((brow[fv >> 6] >> (fv & 63)) & 1ULL) != 0) continue;
+            if (brow != NULL && fv < bit_n && ((brow[fv >> 6] >> (fv & 63)) & 1ULL) != 0) continue;
             uint64_t fkey = ((uint64_t)c0 << 32) | (uint64_t)fv;
             uint64_t h = mix64(fkey);
             hv[1] = (I128)fv;
             if (x->direct_insert) {
               if (direct_add(x, ht, h, hv) != STATUS_OK) return STATUS_ERR;
-              brow = (ht->bits != NULL && c0 < ht->bit_nsyms) ? ht->bits[c0] : NULL;
+              bit_n = ht->bit_nsyms;
+              brow = (ht->bits != NULL && c0 < bit_n) ? ht->bits[c0] : NULL;
               continue;
             }
             if (jobset_has(x, ht, h, hv)) continue;
@@ -766,7 +770,7 @@ static Status sync_indexes(Engine *x, int comp) {
     Table *t = &x->tabs[r];
     if (t->count == 0 || x->strata.comp[r] > comp) continue;
     for (int i = 0; i < t->nidx; i++)
-      if (index_sync(t->idx[i], t, x->err) != STATUS_OK) return STATUS_ERR;
+      if (t->idx[i]->synced != t->count && index_sync(t->idx[i], t, x->err) != STATUS_OK) return STATUS_ERR;
   }
   return STATUS_OK;
 }
@@ -777,7 +781,7 @@ static Status sync_comp_indexes(Engine *x, int comp) {
     Table *t = &x->tabs[x->comp_syncs[k]];
     if (t->count == 0) continue;
     for (int i = 0; i < t->nidx; i++)
-      if (index_sync(t->idx[i], t, x->err) != STATUS_OK) return STATUS_ERR;
+      if (t->idx[i]->synced != t->count && index_sync(t->idx[i], t, x->err) != STATUS_OK) return STATUS_ERR;
   }
   return STATUS_OK;
 }
