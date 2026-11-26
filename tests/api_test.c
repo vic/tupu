@@ -493,6 +493,173 @@ static void test_eval_requires_reset(void) {
   tupu_close(s);
 }
 
+static void test_delta_not_displaced_and_empty_skip(void) {
+  const char *prog =
+      ".decl tag(t: symbol)\n"
+      ".input tag\n"
+      ".decl edge(x: symbol, y: symbol)\n"
+      ".input edge\n"
+      ".decl seed(x: symbol, y: symbol)\n"
+      ".input seed\n"
+      ".decl aux(x: symbol)\n"
+      ".input aux\n"
+      ".decl reach(x: symbol, y: symbol)\n"
+      ".output reach\n"
+      ".decl other(x: symbol, y: symbol)\n"
+      ".output other\n"
+      "reach(x, y) :- seed(x, y).\n"
+      "reach(x, z) :- tag(t), edge(x, y), reach(y, z).\n"
+      "reach(x, y) :- other(x, y).\n"
+      "other(x, y) :- reach(x, y), aux(x).\n";
+  char ebuf[256];
+  int ecode = -1;
+  TupuSession *s = tupu_open_ex(prog, strlen(prog), "deltaskip.dl", 1000000, 1, 1, ebuf, sizeof ebuf, &ecode);
+  check(s != NULL && ecode == 0, "tupu_open_ex deltaskip");
+  if (s != NULL) {
+    int tag_id = tupu_rel_id(s, "tag");
+    int edge_id = tupu_rel_id(s, "edge");
+    int seed_id = tupu_rel_id(s, "seed");
+    int reach_id = tupu_rel_id(s, "reach");
+    int other_id = tupu_rel_id(s, "other");
+    check(tag_id >= 0 && edge_id >= 0 && seed_id >= 0 && reach_id >= 0 && other_id >= 0, "deltaskip rel ids");
+    for (int i = 0; i < 200; i++) {
+      char buf[16];
+      int n = snprintf(buf, sizeof buf, "t%d", i);
+      uint32_t sym = 0;
+      check(n > 0 && tupu_intern(s, buf, (size_t)n, &sym) == 0, "deltaskip intern tag");
+      int64_t row[1] = { (int64_t)sym };
+      check(tupu_add_row(s, tag_id, row, 1) == 0, "deltaskip add tag");
+    }
+    uint32_t n0 = 0, n1 = 0, n2 = 0;
+    check(tupu_intern(s, "n0", 2, &n0) == 0, "deltaskip intern n0");
+    check(tupu_intern(s, "n1", 2, &n1) == 0, "deltaskip intern n1");
+    check(tupu_intern(s, "n2", 2, &n2) == 0, "deltaskip intern n2");
+    int64_t erow[2] = { (int64_t)n0, (int64_t)n1 };
+    int64_t srow[2] = { (int64_t)n1, (int64_t)n2 };
+    check(tupu_add_row(s, edge_id, erow, 2) == 0, "deltaskip add edge");
+    check(tupu_add_row(s, seed_id, srow, 2) == 0, "deltaskip add seed");
+    ecode = -1;
+    check(tupu_eval(s, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "deltaskip eval");
+    check(tupu_rel_count(s, other_id) == 0, "deltaskip other == 0");
+    check(tupu_rel_count(s, reach_id) == 2, "deltaskip reach == 2");
+    if (tupu_rel_count(s, reach_id) == 2) {
+      Pair got[2];
+      for (uint32_t r = 0; r < 2; r++) {
+        int64_t v[2];
+        check(tupu_rel_read_row(s, reach_id, r, v, 2) == 0, "deltaskip read reach");
+        got[r].a = v[0];
+        got[r].b = v[1];
+      }
+      qsort(got, 2, sizeof got[0], cmp_pair);
+      check(got[0].a == (int64_t)n0 && got[0].b == (int64_t)n2, "deltaskip reach row 0");
+      check(got[1].a == (int64_t)n1 && got[1].b == (int64_t)n2, "deltaskip reach row 1");
+    }
+    ecode = -1;
+    check(tupu_replay(s, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "deltaskip replay");
+    tupu_close(s);
+  }
+
+  const char *join_prog =
+      ".decl pop(x: symbol)\n"
+      ".input pop\n"
+      ".decl emp(x: symbol)\n"
+      ".input emp\n"
+      ".decl out(x: symbol)\n"
+      ".output out\n"
+      "out(x) :- pop(x), emp(x).\n";
+  ecode = -1;
+  TupuSession *js = tupu_open(join_prog, strlen(join_prog), "empty_join.dl", 1000000, 1, ebuf, sizeof ebuf, &ecode);
+  check(js != NULL && ecode == 0, "tupu_open empty_join");
+  if (js != NULL) {
+    int pop_id = tupu_rel_id(js, "pop");
+    int out_id = tupu_rel_id(js, "out");
+    check(pop_id >= 0 && out_id >= 0, "empty_join rel ids");
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    for (int frame = 1; frame <= 500; frame++) {
+      check(tupu_reset(js) == 0, "empty_join reset");
+      for (int i = 0; i < 200; i++) {
+        char buf[16];
+        int n = snprintf(buf, sizeof buf, "p%d", i);
+        uint32_t sym = 0;
+        check(n > 0 && tupu_intern(js, buf, (size_t)n, &sym) == 0, "empty_join intern");
+        int64_t row[1] = { (int64_t)sym };
+        check(tupu_add_row(js, pop_id, row, 1) == 0, "empty_join add pop");
+      }
+      ecode = -1;
+      check(tupu_eval(js, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "empty_join eval");
+      check(tupu_rel_count(js, out_id) == 0, "empty_join out == 0");
+    }
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    double ms = (double)(t1.tv_sec - t0.tv_sec) * 1000.0 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
+    printf("delta_empty_500_frames_ms=%.2f\n", ms);
+    tupu_close(js);
+  }
+}
+
+static void test_replay_checks_all_idb_and_round_order(void) {
+  const char *prog =
+      ".decl edge(x: symbol, y: symbol)\n"
+      ".input edge\n"
+      ".decl mid(x: symbol, y: symbol)\n"
+      ".decl out(x: symbol, y: symbol)\n"
+      ".output out\n"
+      "mid(x, y) :- edge(x, y).\n"
+      "mid(x, z) :- mid(x, y), edge(y, z).\n"
+      "out(x, y) :- mid(x, y).\n";
+  char ebuf[256];
+  int ecode = -1;
+  TupuSession *s = tupu_open_ex(prog, strlen(prog), "replay_idb.dl", 100000, 1, 1, ebuf, sizeof ebuf, &ecode);
+  check(s != NULL && ecode == 0, "tupu_open_ex replay_idb");
+  if (s == NULL) return;
+  int edge_id = tupu_rel_id(s, "edge");
+  int mid_id = tupu_rel_id(s, "mid");
+  int out_id = tupu_rel_id(s, "out");
+  check(edge_id >= 0 && mid_id >= 0 && out_id >= 0, "replay_idb rel ids");
+
+  uint32_t sa = 0, sb = 0, sc = 0, sd = 0;
+  check(tupu_intern(s, "a", 1, &sa) == 0 && tupu_intern(s, "b", 1, &sb) == 0 && tupu_intern(s, "c", 1, &sc) == 0,
+        "replay_idb intern abc");
+  int64_t e1[2] = { (int64_t)sa, (int64_t)sb };
+  int64_t e2[2] = { (int64_t)sb, (int64_t)sc };
+  check(tupu_add_row(s, edge_id, e1, 2) == 0 && tupu_add_row(s, edge_id, e2, 2) == 0, "replay_idb add edges");
+  ecode = -1;
+  check(tupu_eval(s, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "replay_idb eval");
+  check(tupu_rel_count(s, mid_id) == 3 && tupu_rel_count(s, out_id) == 3, "replay_idb mid==3 out==3");
+  if (tupu_rel_count(s, out_id) == 3) {
+    Pair got[3];
+    for (uint32_t r = 0; r < 3; r++) {
+      int64_t v[2];
+      check(tupu_rel_read_row(s, out_id, r, v, 2) == 0, "replay_idb read out");
+      got[r].a = v[0];
+      got[r].b = v[1];
+    }
+    qsort(got, 3, sizeof got[0], cmp_pair);
+    check(got[0].a == (int64_t)sa && got[0].b == (int64_t)sb, "replay_idb row ab");
+    check(got[1].a == (int64_t)sa && got[1].b == (int64_t)sc, "replay_idb row ac");
+    check(got[2].a == (int64_t)sb && got[2].b == (int64_t)sc, "replay_idb row bc");
+  }
+  ecode = -1;
+  check(tupu_replay(s, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "replay_idb tupu_replay f1");
+
+  check(tupu_reset(s) == 0, "replay_idb reset");
+  check(tupu_intern(s, "a", 1, &sa) == 0 && tupu_intern(s, "b", 1, &sb) == 0 &&
+            tupu_intern(s, "c", 1, &sc) == 0 && tupu_intern(s, "d", 1, &sd) == 0,
+        "replay_idb intern abcd");
+  int64_t f1[2] = { (int64_t)sa, (int64_t)sb };
+  int64_t f2[2] = { (int64_t)sb, (int64_t)sc };
+  int64_t f3[2] = { (int64_t)sc, (int64_t)sd };
+  check(tupu_add_row(s, edge_id, f1, 2) == 0 && tupu_add_row(s, edge_id, f2, 2) == 0 &&
+            tupu_add_row(s, edge_id, f3, 2) == 0,
+        "replay_idb add edges f2");
+  ecode = -1;
+  check(tupu_eval(s, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "replay_idb eval f2");
+  check(tupu_rel_count(s, mid_id) == 6 && tupu_rel_count(s, out_id) == 6, "replay_idb f2 counts == 6");
+  ecode = -1;
+  check(tupu_replay(s, &ecode, ebuf, sizeof ebuf) == 0 && ecode == 0, "replay_idb tupu_replay f2");
+  tupu_close(s);
+}
+
 int main(void) {
   test_1000_frames();
   test_budget_exceeded();
@@ -503,6 +670,8 @@ int main(void) {
   test_i128_text();
   test_sparse_multistratum_frames();
   test_eval_requires_reset();
+  test_delta_not_displaced_and_empty_skip();
+  test_replay_checks_all_idb_and_round_order();
   printf("api_test failures=%d\n", fails);
   return fails == 0 ? 0 : 1;
 }

@@ -5,6 +5,7 @@ typedef struct {
   Program *p;
   const Strata *s;
   Table *tabs;
+  bool has_fact_counts;
   const Rule *rule;
   int comp;
   Err *e;
@@ -223,7 +224,7 @@ static Status plan_lits(PCtx *c, Lit *const *lits, int n, bool *bound, int delta
       for (int i = 0; i < n; i++)
         if (!placed[i] && tpos[i] == delta_pos) di = i;
       best = di;
-      if (di >= 0 && npos >= 3) {
+      if (c->has_fact_counts && di >= 0 && npos >= 3) {
         uint32_t best_cnt = UINT32_MAX;
         int edb_best = -1;
         for (int i = 0; i < n; i++) {
@@ -304,8 +305,8 @@ static Status plan_variant(PCtx *c, const Rule *r, int delta_pos, Variant *v) {
   return STATUS_OK;
 }
 
-Status plan_program(Program *p, const Strata *s, Table *tabs, Variants *naive, Variants *delta, Err *e) {
-  PCtx c = { p, s, tabs, NULL, 0, e };
+Status plan_program(Program *p, const Strata *s, Table *tabs, bool has_fact_counts, Variants *naive, Variants *delta, Err *e) {
+  PCtx c = { p, s, tabs, has_fact_counts, NULL, 0, e };
   for (int comp = 0; comp < s->ncomps; comp++) {
     c.comp = comp;
     for (size_t i = 0; i < p->rules.n; i++) {

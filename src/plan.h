@@ -56,6 +56,6 @@ typedef struct {
 
 /* plan every rule: round-1 variants in `naive`, recursive-round variants in `delta`, each grouped by the component
    of the head and, inside it, in rule order */
-Status plan_program(Program *p, const Strata *s, Table *tabs, Variants *naive, Variants *delta, Err *e);
+Status plan_program(Program *p, const Strata *s, Table *tabs, bool has_fact_counts, Variants *naive, Variants *delta, Err *e);
 
 #endif

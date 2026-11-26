@@ -571,7 +571,7 @@ static Status engine_open_common(Engine *x, Program *p, const char *facts_dir, u
   }
   if (load_program_facts(x, e) != STATUS_OK) return STATUS_ERR;
   if (sym_build_rank(&p->syms, e) != STATUS_OK) return STATUS_ERR;
-  if (plan_program(p, &x->strata, x->tabs, &x->naive, &x->delta, e) != STATUS_OK) return STATUS_ERR;
+  if (plan_program(p, &x->strata, x->tabs, facts_dir != NULL, &x->naive, &x->delta, e) != STATUS_OK) return STATUS_ERR;
   x->naive_first = calloc((size_t)x->strata.ncomps + 1, sizeof *x->naive_first);
   x->delta_first = calloc((size_t)x->strata.ncomps + 1, sizeof *x->delta_first);
   x->comp_recursive = calloc((size_t)x->strata.ncomps + 1, sizeof *x->comp_recursive);
@@ -846,6 +846,18 @@ static Status run_round(Engine *x, const Variants *vs, const size_t *by_comp, si
   Status st = STATUS_OK;
   for (size_t idx = first; idx < end && st == STATUS_OK; idx++) {
     const Variant *v = &vs->p[by_comp[idx]];
+    bool empty = false;
+    for (int s = 0; s < v->plan.nsteps; s++) {
+      if (v->plan.steps[s].kind == ST_ATOM) {
+        uint32_t slo, shi;
+        range_of(x, &v->plan.steps[s], &slo, &shi);
+        if (slo == shi) {
+          empty = true;
+          break;
+        }
+      }
+    }
+    if (empty) continue;
     int fa = first_atom_step(v);
     if (fa < 0) {
       st = jobs_push(jl, v, -1, 0, 0, x->err);
@@ -983,8 +995,14 @@ Status engine_eval(Engine *x, Err *e) {
     bool any_work = false;
     for (size_t k = nfirst; k < nend; k++) {
       const Variant *v = &x->naive.p[x->naive_by_comp[k]];
-      int fa = first_atom_step(v);
-      if (fa < 0 || x->tabs[v->plan.steps[fa].rel].count > 0) {
+      bool ready = true;
+      for (int s = 0; s < v->plan.nsteps; s++) {
+        if (v->plan.steps[s].kind == ST_ATOM && x->tabs[v->plan.steps[s].rel].count == 0) {
+          ready = false;
+          break;
+        }
+      }
+      if (ready) {
         any_work = true;
         break;
       }
@@ -1083,6 +1101,7 @@ const Variant *engine_variant_of(const Engine *x, uint32_t rule) { return naive_
 
 Status engine_replay(Engine *x, Err *e) {
   x->err = e;
+  if (!x->prov) return STATUS_OK;
   Program *p = x->prog;
   if (sync_indexes(x, x->strata.ncomps) != STATUS_OK) return STATUS_ERR;
   for (size_t r = 0; r < p->rels.n; r++) {
@@ -1092,7 +1111,6 @@ Status engine_replay(Engine *x, Err *e) {
   for (size_t r = 0; r < p->rels.n; r++) {
     const Relation *rel = &p->rels.p[r];
     const Table *t = &x->tabs[r];
-    if (!rel->is_output) continue;
     for (uint32_t row = 0; row < t->count; row++) {
       if (t->org_kind[row] != ORG_RULE) continue;
       const Variant *v = naive_variant(x, t->org_ref[row]);
@@ -1101,7 +1119,7 @@ Status engine_replay(Engine *x, Err *e) {
       x->mode = MODE_REPLAY;
       x->cur = v;
       x->target = cells;
-      x->target_body = t->pool + t->poff[row];
+      x->target_body = t->pool != NULL ? t->pool + t->poff[row] : NULL;
       x->found = false;
       Status st = v == NULL ? STATUS_ERR : ex_run(x, &v->plan, 0, END_HEAD);
       x->mode = MODE_DERIVE;
@@ -1109,6 +1127,18 @@ Status engine_replay(Engine *x, Err *e) {
       if (!x->found)
         return err_set(e, CODE_PROVENANCE_MISMATCH, NULL, 0, "row %u of %.*s does not derive again from rule %u", row,
                        (int)rel->name.n, rel->name.s, t->org_ref[row]);
+      if (x->prov && v != NULL) {
+        for (int i = 0; i < v->natoms; i++) {
+          int body_rel = v->atom_rel[i];
+          uint32_t body_row = x->target_body[i];
+          if (body_row >= x->tabs[body_rel].count)
+            return err_set(e, CODE_PROVENANCE_MISMATCH, NULL, 0, "body row %u out of range for %.*s", body_row,
+                           (int)p->rels.p[body_rel].name.n, p->rels.p[body_rel].name.s);
+          if (x->strata.comp[body_rel] == x->strata.comp[r] && x->tabs[body_rel].round[body_row] >= t->round[row])
+            return err_set(e, CODE_PROVENANCE_MISMATCH, NULL, 0, "non-decreasing round in recursive stratum for %.*s",
+                           (int)rel->name.n, rel->name.s);
+        }
+      }
     }
   }
   return STATUS_OK;
