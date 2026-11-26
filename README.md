@@ -37,14 +37,14 @@ tupu runs programs directly with no C++ or Rust compilation step. Even so, it be
 
 | benchmark | tupu (interpreter) | Soufflé (compiled) | FlowLog (compiled) |
 |---|---|---|---|
-| `tc -j 1` | 0.20 s / 8.5 MB | 0.95 s / 10.0 MB | 4.46 s / 326.8 MB |
-| `tc -j 6` | 0.12 s / 8.5 MB | 0.97 s / 10.0 MB | 2.42 s / 675.5 MB |
-| `andersen -j 1` | 0.94 s / 42.5 MB | 7.20 s / 24.7 MB | > 40 s (timeout) |
-| `andersen -j 6` | 0.45 s / 47.7 MB | 7.27 s / 24.8 MB | > 15 s (timeout) |
-| `rsg -j 1` | 0.08 s / 13.0 MB | 0.16 s / 10.1 MB | 0.37 s / 59.9 MB |
-| `rsg -j 6` | 0.08 s / 14.0 MB | 0.17 s / 10.3 MB | 0.20 s / 147.8 MB |
+| `tc -j 1` | 0.21 s / 8.5 MB | 0.95 s / 10.0 MB | 4.46 s / 326.8 MB |
+| `tc -j 6` | 0.14 s / 8.9 MB | 0.97 s / 10.0 MB | 2.42 s / 675.5 MB |
+| `andersen -j 1` | 0.99 s / 43.5 MB | 7.20 s / 24.7 MB | > 40 s (timeout) |
+| `andersen -j 6` | 0.59 s / 49.1 MB | 7.27 s / 24.8 MB | > 15 s (timeout) |
+| `rsg -j 1` | 0.09 s / 13.5 MB | 0.16 s / 10.1 MB | 0.37 s / 59.9 MB |
+| `rsg -j 6` | 0.09 s / 14.6 MB | 0.17 s / 10.3 MB | 0.20 s / 147.8 MB |
 
-Peak memory on `tc` is now lower than compiled Soufflé; `andersen` RSS dropped from 65 MB to 42.5 MB via dense 2D bitset deduplication.
+Peak memory on `tc` is now lower than compiled Soufflé; `andersen` RSS dropped from 65 MB to 43.5 MB via dense 2D bitset deduplication. The tupu cells were measured again on 2026-11-26 at commit db58e6a4 (AMD Ryzen 5 7530U, `bench/row.sh`, quiet host); the comparator cells are from the earlier run.
 
 ## Status
 
