@@ -660,6 +660,522 @@ static void test_replay_checks_all_idb_and_round_order(void) {
   tupu_close(s);
 }
 
+static uint64_t shuffle_next(uint64_t *state) {
+  uint64_t mix = (*state += 0x9e3779b97f4a7c15ULL);
+  mix = (mix ^ (mix >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  mix = (mix ^ (mix >> 27)) * 0x94d049bb133111ebULL;
+  return mix ^ (mix >> 31);
+}
+
+static void shuffle_indices(uint32_t *indices, size_t count, uint64_t *state) {
+  if (count < 2) return;
+  for (size_t pos = count - 1; pos > 0; pos--) {
+    size_t swap_idx = (size_t)(shuffle_next(state) % (uint64_t)(pos + 1));
+    uint32_t saved = indices[pos];
+    indices[pos] = indices[swap_idx];
+    indices[swap_idx] = saved;
+  }
+}
+
+static const char *SHUFFLE_DECLS =
+    ".decl baseBelow(lhs: symbol, rhs: symbol, diff: number)\n"
+    ".input baseBelow\n"
+    ".decl baseLeq(lhs: symbol, rhs: symbol, diff: number)\n"
+    ".input baseLeq\n"
+    ".decl belowOwed(owner: symbol, lhs: symbol, rhs: symbol, diff: number)\n"
+    ".input belowOwed\n"
+    ".decl alloc(slot: symbol, kind: symbol, point: symbol)\n"
+    ".input alloc\n"
+    ".decl dead(slot: symbol, point: symbol)\n"
+    ".input dead\n"
+    ".decl next(prev: symbol, curr: symbol)\n"
+    ".input next\n"
+    ".decl evalPoint(point: symbol)\n"
+    ".input evalPoint\n"
+    ".decl belowFrom(lhs: symbol, rhs: symbol, diff: number)\n"
+    ".output belowFrom\n"
+    ".decl leqFrom(lhs: symbol, rhs: symbol, diff: number)\n"
+    ".output leqFrom\n"
+    ".decl reuseCand(slot: symbol, point: symbol)\n"
+    ".output reuseCand\n"
+    ".decl reuseEarlier(slot: symbol, point: symbol)\n"
+    ".output reuseEarlier\n"
+    ".decl reuseLaterAlloc(slot: symbol, point: symbol)\n"
+    ".output reuseLaterAlloc\n"
+    ".decl reuseAt(slot: symbol, point: symbol)\n"
+    ".output reuseAt\n"
+    ".decl reject(owner: symbol, subject: symbol, val: number)\n"
+    ".output reject\n";
+
+static const char *const SHUFFLE_RULES[] = {
+    "belowFrom(lhs, rhs, diff) :- baseBelow(lhs, rhs, diff).\n",
+    "leqFrom(lhs, rhs, diff) :- baseLeq(lhs, rhs, diff).\n",
+    "belowFrom(lhs, rhs, diff - 1) :- baseLeq(lhs, rhs, diff), "
+    "diff >= -1000000000000000000000000000000, diff <= 1000000000000000000000000000000, ord(lhs) < ord(rhs).\n",
+    "leqFrom(lhs, rhs, diff) :- belowFrom(lhs, rhs, diff).\n",
+    "leqFrom(lhs, rhs, diff + 1) :- belowFrom(lhs, rhs, diff), "
+    "diff >= -1000000000000000000000000000000, diff <= 1000000000000000000000000000000.\n",
+    "belowFrom(lhs, rhs, lhs_diff + rhs_diff) :- belowFrom(lhs, mid, lhs_diff), leqFrom(mid, rhs, rhs_diff), "
+    "ord(lhs) != ord(rhs), lhs_diff >= -1000000000000000000000000000000, lhs_diff <= 1000000000000000000000000000000, "
+    "rhs_diff >= -1000000000000000000000000000000, rhs_diff <= 1000000000000000000000000000000.\n",
+    "belowFrom(lhs, rhs, lhs_diff + rhs_diff) :- leqFrom(lhs, mid, lhs_diff), belowFrom(mid, rhs, rhs_diff), "
+    "ord(lhs) != ord(rhs), lhs_diff >= -1000000000000000000000000000000, lhs_diff <= 1000000000000000000000000000000, "
+    "rhs_diff >= -1000000000000000000000000000000, rhs_diff <= 1000000000000000000000000000000.\n",
+    "leqFrom(lhs, rhs, lhs_diff + rhs_diff) :- leqFrom(lhs, mid, lhs_diff), leqFrom(mid, rhs, rhs_diff), "
+    "ord(lhs) != ord(rhs), lhs_diff >= -1000000000000000000000000000000, lhs_diff <= 1000000000000000000000000000000, "
+    "rhs_diff >= -1000000000000000000000000000000, rhs_diff <= 1000000000000000000000000000000.\n",
+    "reuseCand(slot, point) :- dead(slot, point), evalPoint(point), alloc(slot, _, alloc_pt), "
+    "belowFrom(alloc_pt, point, diff), diff >= 0.\n",
+    "reuseCand(slot, point) :- dead(slot, prev_pt), next(prev_pt, point), evalPoint(point), alloc(slot, _, alloc_pt), "
+    "leqFrom(alloc_pt, point, diff), diff >= 0.\n",
+    "reuseEarlier(slot, point) :- reuseCand(slot, prev_pt), next(prev_pt, point), evalPoint(point).\n",
+    "reuseEarlier(slot, point) :- reuseEarlier(slot, prev_pt), next(prev_pt, point), evalPoint(point).\n",
+    "reuseLaterAlloc(slot, point) :- reuseCand(slot, point), alloc(slot, _, alloc_pt), alloc(other, _, alloc_pt), "
+    "ord(other) < ord(slot), reuseCand(other, point), !reuseEarlier(other, point).\n",
+    "reuseAt(slot, point) :- reuseCand(slot, point), !reuseEarlier(slot, point), !reuseLaterAlloc(slot, point).\n",
+    "reject(owner, lhs, diff) :- belowOwed(owner, lhs, rhs, diff), !belowFrom(lhs, rhs, diff).\n",
+    "reject(\"missing_reuse\", slot, ord(point)) :- dead(slot, point), evalPoint(point), "
+    "alloc(slot, \"must_reuse\", _), !reuseAt(slot, point).\n",
+};
+
+typedef struct {
+  const char *rel_name;
+  const char *sym_cols[3];
+  const char *num_text;
+  int has_num;
+} ShuffleFactRow;
+
+static const ShuffleFactRow SHUFFLE_DENSE_FACTS[] = {
+    {"baseBelow", {"pt_alpha", "pt_beta", NULL}, "1", 1},
+    {"baseBelow", {"pt_beta", "pt_gamma", NULL}, "0", 1},
+    {"baseBelow", {"pt_gamma", "pt_delta", NULL}, "2", 1},
+    {"baseBelow", {"pt_delta", "pt_epsilon", NULL}, "-1", 1},
+    {"baseBelow", {"pt_epsilon", "pt_zeta", NULL}, "3", 1},
+    {"baseBelow", {"pt_alpha", "pt_eta", NULL}, "0", 1},
+    {"baseBelow", {"pt_eta", "pt_theta", NULL}, "5", 1},
+    {"baseBelow", {"edge_lo", "edge_mid", NULL}, "18446744073709551616", 1},
+    {"baseBelow", {"limit_lo", "limit_hi", NULL}, "170141183460469231731687303715884105727", 1},
+
+    {"baseLeq", {"pt_alpha", "pt_alpha", NULL}, "0", 1},
+    {"baseLeq", {"pt_beta", "pt_beta", NULL}, "0", 1},
+    {"baseLeq", {"pt_beta", "pt_delta", NULL}, "1", 1},
+    {"baseLeq", {"pt_gamma", "pt_epsilon", NULL}, "-3", 1},
+    {"baseLeq", {"pt_zeta", "pt_iota", NULL}, "4", 1},
+    {"baseLeq", {"pt_theta", "pt_kappa", NULL}, "-5", 1},
+    {"baseLeq", {"pt_iota", "pt_kappa", NULL}, "2", 1},
+    {"baseLeq", {"edge_mid", "edge_hi", NULL}, "-18446744073709551616", 1},
+    {"baseLeq", {"edge_min_src", "edge_min_dst", NULL}, "-170141183460469231731687303715884105728", 1},
+
+    {"belowOwed", {"chk_alpha", "pt_alpha", "pt_gamma"}, "1", 1},
+    {"belowOwed", {"chk_beta", "pt_alpha", "pt_delta"}, "99", 1},
+    {"belowOwed", {"chk_gamma", "pt_delta", "pt_alpha"}, "-1", 1},
+    {"belowOwed", {"chk_delta", "edge_lo", "edge_hi"}, "0", 1},
+    {"belowOwed", {"chk_epsilon", "edge_lo", "edge_hi"}, "18446744073709551616", 1},
+    {"belowOwed", {"chk_alpha", "limit_lo", "limit_hi"}, "170141183460469231731687303715884105727", 1},
+    {"belowOwed", {"chk_beta", "edge_min_src", "edge_min_dst"}, "-170141183460469231731687303715884105728", 1},
+
+    {"next", {"pt_alpha", "pt_beta", NULL}, NULL, 0},
+    {"next", {"pt_beta", "pt_gamma", NULL}, NULL, 0},
+    {"next", {"pt_gamma", "pt_delta", NULL}, NULL, 0},
+    {"next", {"pt_delta", "pt_epsilon", NULL}, NULL, 0},
+    {"next", {"pt_epsilon", "pt_zeta", NULL}, NULL, 0},
+    {"next", {"pt_eta", "pt_theta", NULL}, NULL, 0},
+
+    {"evalPoint", {"pt_beta", NULL, NULL}, NULL, 0},
+    {"evalPoint", {"pt_gamma", NULL, NULL}, NULL, 0},
+    {"evalPoint", {"pt_delta", NULL, NULL}, NULL, 0},
+    {"evalPoint", {"pt_epsilon", NULL, NULL}, NULL, 0},
+    {"evalPoint", {"pt_zeta", NULL, NULL}, NULL, 0},
+    {"evalPoint", {"pt_theta", NULL, NULL}, NULL, 0},
+
+    {"alloc", {"slot_alpha", "free_slot", "pt_alpha"}, NULL, 0},
+    {"alloc", {"slot_beta", "free_slot", "pt_alpha"}, NULL, 0},
+    {"alloc", {"slot_gamma", "free_slot", "pt_alpha"}, NULL, 0},
+    {"alloc", {"slot_delta", "must_reuse", "pt_beta"}, NULL, 0},
+    {"alloc", {"slot_epsilon", "pinned", "pt_delta"}, NULL, 0},
+    {"alloc", {"slot_zeta", "must_reuse", "pt_alpha"}, NULL, 0},
+    {"alloc", {"slot_eta", "free_slot", "pt_eta"}, NULL, 0},
+
+    {"dead", {"slot_alpha", "pt_gamma", NULL}, NULL, 0},
+    {"dead", {"slot_beta", "pt_gamma", NULL}, NULL, 0},
+    {"dead", {"slot_gamma", "pt_delta", NULL}, NULL, 0},
+    {"dead", {"slot_delta", "pt_delta", NULL}, NULL, 0},
+    {"dead", {"slot_epsilon", "pt_epsilon", NULL}, NULL, 0},
+    {"dead", {"slot_zeta", "pt_gamma", NULL}, NULL, 0},
+    {"dead", {"slot_eta", "pt_theta", NULL}, NULL, 0},
+};
+
+static const ShuffleFactRow SHUFFLE_SPARSE_FACTS[] = {
+    {"baseBelow", {"pt_alpha", "pt_beta", NULL}, "2", 1},
+    {"baseBelow", {"pt_beta", "pt_gamma", NULL}, "1", 1},
+    {"baseBelow", {"limit_lo", "limit_hi", NULL}, "170141183460469231731687303715884105727", 1},
+
+    {"baseLeq", {"pt_gamma", "pt_delta", NULL}, "0", 1},
+    {"baseLeq", {"edge_min_src", "edge_min_dst", NULL}, "-170141183460469231731687303715884105728", 1},
+
+    {"belowOwed", {"chk_alpha", "pt_alpha", "pt_gamma"}, "3", 1},
+    {"belowOwed", {"chk_beta", "pt_alpha", "pt_delta"}, "10", 1},
+
+    {"next", {"pt_beta", "pt_gamma", NULL}, NULL, 0},
+    {"next", {"pt_gamma", "pt_delta", NULL}, NULL, 0},
+
+    {"evalPoint", {"pt_beta", NULL, NULL}, NULL, 0},
+    {"evalPoint", {"pt_gamma", NULL, NULL}, NULL, 0},
+    {"evalPoint", {"pt_delta", NULL, NULL}, NULL, 0},
+
+    {"alloc", {"slot_alpha", "free_slot", "pt_alpha"}, NULL, 0},
+    {"alloc", {"slot_beta", "free_slot", "pt_alpha"}, NULL, 0},
+    {"alloc", {"slot_gamma", "must_reuse", "pt_alpha"}, NULL, 0},
+
+    {"dead", {"slot_alpha", "pt_beta", NULL}, NULL, 0},
+    {"dead", {"slot_beta", "pt_beta", NULL}, NULL, 0},
+    {"dead", {"slot_gamma", "pt_gamma", NULL}, NULL, 0},
+};
+
+typedef struct {
+  char *bytes;
+  size_t len;
+  size_t cap;
+  uint32_t rel_counts[7];
+} ShuffleSnapshot;
+
+static void shuffle_append_bytes(ShuffleSnapshot *snap, const char *data, size_t len) {
+  if (len == 0) return;
+  if (snap->len + len + 1 > snap->cap) {
+    size_t next_cap = snap->cap == 0 ? 4096 : snap->cap;
+    while (next_cap < snap->len + len + 1) next_cap *= 2;
+    char *grown = realloc(snap->bytes, next_cap);
+    check(grown != NULL, "shuffle_append_bytes realloc");
+    if (grown == NULL) return;
+    snap->bytes = grown;
+    snap->cap = next_cap;
+  }
+  memcpy(snap->bytes + snap->len, data, len);
+  snap->len += len;
+  snap->bytes[snap->len] = '\0';
+}
+
+static int cmp_cstr_ptr(const void *left_ptr, const void *right_ptr) {
+  const char *const *lhs = left_ptr;
+  const char *const *rhs = right_ptr;
+  return strcmp(*lhs, *rhs);
+}
+
+static void shuffle_collect_snapshot(const TupuSession *session, const char *const *rel_names, size_t rel_count,
+                                     ShuffleSnapshot *snap) {
+  memset(snap, 0, sizeof *snap);
+  for (size_t rel_idx = 0; rel_idx < rel_count; rel_idx++) {
+    int rel_id = tupu_rel_id(session, rel_names[rel_idx]);
+    int ncols = tupu_rel_ncols(session, rel_id);
+    check(rel_id >= 0 && ncols > 0 && ncols <= 4, "shuffle output rel metadata");
+    if (rel_id < 0 || ncols <= 0 || ncols > 4) continue;
+    uint32_t row_count = tupu_rel_count(session, rel_id);
+    snap->rel_counts[rel_idx] = row_count;
+    char header_buf[128];
+    int header_len = snprintf(header_buf, sizeof header_buf, "@rel %s count=%u\n", rel_names[rel_idx], row_count);
+    check(header_len > 0 && (size_t)header_len < sizeof header_buf, "shuffle format header");
+    if (header_len > 0) shuffle_append_bytes(snap, header_buf, (size_t)header_len);
+    if (row_count == 0) continue;
+
+    char **row_strs = calloc(row_count, sizeof *row_strs);
+    check(row_strs != NULL, "shuffle alloc row_strs");
+    if (row_strs == NULL) continue;
+
+    for (uint32_t row_idx = 0; row_idx < row_count; row_idx++) {
+      TupuI128 wide_vals[4];
+      check(tupu_rel_read_row_i128(session, rel_id, row_idx, wide_vals, ncols) == 0, "shuffle read row");
+      char line_buf[512];
+      size_t line_pos = 0;
+      int prefix_len = snprintf(line_buf, sizeof line_buf, "%s", rel_names[rel_idx]);
+      check(prefix_len > 0 && (size_t)prefix_len < sizeof line_buf, "shuffle line prefix");
+      if (prefix_len > 0) line_pos = (size_t)prefix_len;
+
+      for (int col_idx = 0; col_idx < ncols; col_idx++) {
+        check(line_pos + 2 < sizeof line_buf, "shuffle line tab room");
+        if (line_pos + 2 >= sizeof line_buf) break;
+        line_buf[line_pos++] = '\t';
+        int kind = tupu_rel_col_kind(session, rel_id, col_idx);
+        if (kind == TUPU_COL_SYMBOL) {
+          size_t sym_len = 0;
+          const char *sym_ptr = tupu_sym_str(session, (uint32_t)wide_vals[col_idx].lo, &sym_len);
+          check(sym_ptr != NULL && line_pos + sym_len + 2 < sizeof line_buf, "shuffle sym lookup");
+          if (sym_ptr != NULL && line_pos + sym_len + 2 < sizeof line_buf) {
+            memcpy(line_buf + line_pos, sym_ptr, sym_len);
+            line_pos += sym_len;
+          }
+        } else {
+          check(kind == TUPU_COL_NUMBER, "shuffle col kind number");
+          char num_buf[TUPU_I128_TEXT_MAX];
+          size_t num_len = tupu_i128_format(wide_vals[col_idx], num_buf);
+          check(num_len > 0 && line_pos + num_len + 2 < sizeof line_buf, "shuffle num format");
+          if (line_pos + num_len + 2 < sizeof line_buf) {
+            memcpy(line_buf + line_pos, num_buf, num_len);
+            line_pos += num_len;
+          }
+        }
+      }
+      line_buf[line_pos++] = '\n';
+      line_buf[line_pos] = '\0';
+      row_strs[row_idx] = malloc(line_pos + 1);
+      check(row_strs[row_idx] != NULL, "shuffle alloc row string");
+      if (row_strs[row_idx] != NULL) memcpy(row_strs[row_idx], line_buf, line_pos + 1);
+    }
+
+    qsort(row_strs, row_count, sizeof *row_strs, cmp_cstr_ptr);
+    for (uint32_t row_idx = 0; row_idx < row_count; row_idx++) {
+      if (row_strs[row_idx] != NULL) {
+        shuffle_append_bytes(snap, row_strs[row_idx], strlen(row_strs[row_idx]));
+        free(row_strs[row_idx]);
+      }
+    }
+    free(row_strs);
+  }
+}
+
+static int shuffle_sym_index(const char *const *syms, size_t sym_count, const char *name) {
+  for (size_t idx = 0; idx < sym_count; idx++) {
+    if (strcmp(syms[idx], name) == 0) return (int)idx;
+  }
+  return -1;
+}
+
+static int shuffle_is_narrow_num(TupuI128 wide_val) {
+  if (wide_val.hi == 0 && wide_val.lo <= (uint64_t)INT64_MAX) return 1;
+  if (wide_val.hi == -1 && wide_val.lo >= (uint64_t)INT64_MIN) return 1;
+  return 0;
+}
+
+static void shuffle_run_frame(TupuSession *session, const ShuffleFactRow *facts, size_t fact_count, uint64_t fact_seed,
+                              const char *const *rel_names, size_t rel_count, ShuffleSnapshot *snap) {
+  check(tupu_reset(session) == 0, "shuffle tupu_reset");
+
+  const char *sym_list[64];
+  size_t sym_count = 0;
+  for (size_t fact_idx = 0; fact_idx < fact_count; fact_idx++) {
+    for (int col_idx = 0; col_idx < 3; col_idx++) {
+      const char *sym_name = facts[fact_idx].sym_cols[col_idx];
+      if (sym_name != NULL && shuffle_sym_index(sym_list, sym_count, sym_name) < 0) {
+        check(sym_count < 64, "shuffle sym_list capacity");
+        if (sym_count < 64) sym_list[sym_count++] = sym_name;
+      }
+    }
+  }
+
+  uint32_t sym_order[64];
+  uint32_t sym_ids[64];
+  for (size_t idx = 0; idx < sym_count; idx++) sym_order[idx] = (uint32_t)idx;
+
+  uint32_t row_order[64];
+  check(fact_count <= 64, "shuffle fact_count capacity");
+  for (size_t idx = 0; idx < fact_count; idx++) row_order[idx] = (uint32_t)idx;
+
+  if (fact_seed != 0) {
+    uint64_t rng_state = fact_seed;
+    shuffle_indices(sym_order, sym_count, &rng_state);
+    shuffle_indices(row_order, fact_count, &rng_state);
+  }
+
+  for (size_t idx = 0; idx < sym_count; idx++) {
+    uint32_t sym_slot = sym_order[idx];
+    const char *sym_name = sym_list[sym_slot];
+    check(tupu_intern(session, sym_name, strlen(sym_name), &sym_ids[sym_slot]) == 0, "shuffle tupu_intern");
+  }
+
+  for (size_t idx = 0; idx < fact_count; idx++) {
+    const ShuffleFactRow *row = &facts[row_order[idx]];
+    int rel_id = tupu_rel_id(session, row->rel_name);
+    int ncols = tupu_rel_ncols(session, rel_id);
+    check(rel_id >= 0 && ncols > 0 && ncols <= 4, "shuffle input rel metadata");
+    if (rel_id < 0 || ncols <= 0 || ncols > 4) continue;
+
+    int sym_limit = row->has_num ? ncols - 1 : ncols;
+    TupuI128 parsed_num = {0, 0};
+    int use_narrow = 1;
+    if (row->has_num) {
+      check(tupu_i128_parse(row->num_text, strlen(row->num_text), &parsed_num) == 0, "shuffle i128 parse");
+      use_narrow = shuffle_is_narrow_num(parsed_num);
+    }
+
+    if (use_narrow) {
+      int64_t row_vals[4];
+      for (int col_idx = 0; col_idx < sym_limit; col_idx++) {
+        int sym_slot = shuffle_sym_index(sym_list, sym_count, row->sym_cols[col_idx]);
+        check(sym_slot >= 0, "shuffle sym index valid");
+        row_vals[col_idx] = sym_slot >= 0 ? (int64_t)sym_ids[sym_slot] : 0;
+      }
+      if (row->has_num) row_vals[sym_limit] = (int64_t)parsed_num.lo;
+      check(tupu_add_row(session, rel_id, row_vals, ncols) == 0, "shuffle tupu_add_row");
+    } else {
+      TupuI128 wide_vals[4];
+      for (int col_idx = 0; col_idx < sym_limit; col_idx++) {
+        int sym_slot = shuffle_sym_index(sym_list, sym_count, row->sym_cols[col_idx]);
+        check(sym_slot >= 0, "shuffle wide sym index valid");
+        wide_vals[col_idx] = tupu_i128_from_u64(sym_slot >= 0 ? sym_ids[sym_slot] : 0);
+      }
+      wide_vals[sym_limit] = parsed_num;
+      check(tupu_add_row_i128(session, rel_id, wide_vals, ncols) == 0, "shuffle tupu_add_row_i128");
+    }
+  }
+
+  char err_buf[256];
+  int err_code = -1;
+  int eval_rc = tupu_eval(session, &err_code, err_buf, sizeof err_buf);
+  check(eval_rc == 0 && err_code == 0, "shuffle tupu_eval");
+  if (eval_rc != 0) fprintf(stderr, "shuffle tupu_eval err=%s\n", err_buf);
+
+  err_code = -1;
+  int replay_rc = tupu_replay(session, &err_code, err_buf, sizeof err_buf);
+  check(replay_rc == 0 && err_code == 0, "shuffle tupu_replay");
+  if (replay_rc != 0) fprintf(stderr, "shuffle tupu_replay err=%s\n", err_buf);
+
+  shuffle_collect_snapshot(session, rel_names, rel_count, snap);
+}
+
+static void test_shuffle_golden_order_independence(void) {
+  static const char *const out_rels[] = {
+      "belowFrom", "leqFrom", "reuseCand", "reuseEarlier", "reuseLaterAlloc", "reuseAt", "reject",
+  };
+  const size_t out_rel_count = sizeof out_rels / sizeof out_rels[0];
+  const size_t rule_count = sizeof SHUFFLE_RULES / sizeof SHUFFLE_RULES[0];
+  const size_t dense_count = sizeof SHUFFLE_DENSE_FACTS / sizeof SHUFFLE_DENSE_FACTS[0];
+  const size_t sparse_count = sizeof SHUFFLE_SPARSE_FACTS / sizeof SHUFFLE_SPARSE_FACTS[0];
+
+  size_t prog_cap = strlen(SHUFFLE_DECLS) + 1;
+  for (size_t idx = 0; idx < rule_count; idx++) prog_cap += strlen(SHUFFLE_RULES[idx]);
+  char *prog_buf = malloc(prog_cap);
+  check(prog_buf != NULL, "shuffle alloc prog_buf");
+  if (prog_buf == NULL) return;
+
+  static const uint64_t rule_seeds[] = {0, 1, 2, 3};
+  static const uint64_t fact_seeds[] = {0, 101, 202, 303};
+  static const size_t thread_counts[] = {1, 4};
+
+  ShuffleSnapshot canonical_dense;
+  ShuffleSnapshot canonical_sparse;
+  memset(&canonical_dense, 0, sizeof canonical_dense);
+  memset(&canonical_sparse, 0, sizeof canonical_sparse);
+  int has_dense = 0;
+  int has_sparse = 0;
+
+  for (size_t rule_seed_idx = 0; rule_seed_idx < sizeof rule_seeds / sizeof rule_seeds[0]; rule_seed_idx++) {
+    uint32_t rule_perm[32];
+    check(rule_count <= 32, "shuffle rule_perm capacity");
+    for (size_t idx = 0; idx < rule_count; idx++) rule_perm[idx] = (uint32_t)idx;
+    if (rule_seeds[rule_seed_idx] != 0) {
+      uint64_t rule_state = rule_seeds[rule_seed_idx];
+      shuffle_indices(rule_perm, rule_count, &rule_state);
+    }
+
+    size_t prog_pos = strlen(SHUFFLE_DECLS);
+    memcpy(prog_buf, SHUFFLE_DECLS, prog_pos);
+    for (size_t idx = 0; idx < rule_count; idx++) {
+      const char *rule_text = SHUFFLE_RULES[rule_perm[idx]];
+      size_t rule_len = strlen(rule_text);
+      memcpy(prog_buf + prog_pos, rule_text, rule_len);
+      prog_pos += rule_len;
+    }
+    prog_buf[prog_pos] = '\0';
+
+    for (size_t thread_idx = 0; thread_idx < sizeof thread_counts / sizeof thread_counts[0]; thread_idx++) {
+      size_t nthreads = thread_counts[thread_idx];
+      char err_buf[256];
+      int err_code = -1;
+      TupuSession *session = tupu_open_ex(prog_buf, prog_pos, "shuffle_golden.dl", 1000000, 1, nthreads,
+                                          err_buf, sizeof err_buf, &err_code);
+      check(session != NULL && err_code == 0, "shuffle tupu_open_ex");
+      if (session == NULL) {
+        fprintf(stderr, "shuffle tupu_open_ex err=%s\n", err_buf);
+        continue;
+      }
+
+      for (size_t fact_idx = 0; fact_idx < sizeof fact_seeds / sizeof fact_seeds[0]; fact_idx++) {
+        uint64_t fact_seed = fact_seeds[fact_idx];
+        ShuffleSnapshot dense_snap;
+        ShuffleSnapshot sparse_snap;
+        shuffle_run_frame(session, SHUFFLE_DENSE_FACTS, dense_count, fact_seed, out_rels, out_rel_count, &dense_snap);
+        shuffle_run_frame(session, SHUFFLE_SPARSE_FACTS, sparse_count, fact_seed, out_rels, out_rel_count, &sparse_snap);
+
+        check(dense_snap.rel_counts[0] > 0, "shuffle dense belowFrom non-empty");
+        check(dense_snap.rel_counts[1] > 0, "shuffle dense leqFrom non-empty");
+        check(dense_snap.rel_counts[2] > 0, "shuffle dense reuseCand non-empty");
+        check(dense_snap.rel_counts[3] > 0, "shuffle dense reuseEarlier non-empty");
+        check(dense_snap.rel_counts[4] > 0, "shuffle dense reuseLaterAlloc non-empty");
+        check(dense_snap.rel_counts[5] > 0, "shuffle dense reuseAt non-empty");
+        check(dense_snap.rel_counts[6] > 0, "shuffle dense reject non-empty");
+
+        check(sparse_snap.rel_counts[0] > 0, "shuffle sparse belowFrom non-empty");
+        check(sparse_snap.rel_counts[5] > 0, "shuffle sparse reuseAt non-empty");
+        check(sparse_snap.rel_counts[6] > 0, "shuffle sparse reject non-empty");
+        check(sparse_snap.rel_counts[0] < dense_snap.rel_counts[0], "shuffle sparse belowFrom distinct from dense");
+        check(sparse_snap.rel_counts[5] < dense_snap.rel_counts[5], "shuffle sparse reuseAt distinct from dense");
+        check(sparse_snap.rel_counts[6] < dense_snap.rel_counts[6], "shuffle sparse reject distinct from dense");
+
+        if (!has_dense) {
+          canonical_dense = dense_snap;
+          has_dense = 1;
+          check(canonical_dense.bytes != NULL &&
+                    strstr(canonical_dense.bytes, "belowFrom\tedge_lo\tedge_hi\t0\n") != NULL,
+                "shuffle canonical dense 128-bit transitive bound");
+          check(canonical_dense.bytes != NULL &&
+                    strstr(canonical_dense.bytes,
+                           "belowFrom\tlimit_lo\tlimit_hi\t170141183460469231731687303715884105727\n") != NULL,
+                "shuffle canonical dense i128 max bound");
+          check(canonical_dense.bytes != NULL &&
+                    strstr(canonical_dense.bytes, "reject\tchk_beta\tpt_alpha\t99\n") != NULL,
+                "shuffle canonical dense reject missing bound");
+          check(canonical_dense.bytes != NULL &&
+                    strstr(canonical_dense.bytes, "reject\tchk_gamma\tpt_delta\t-1\n") != NULL,
+                "shuffle canonical dense reject negative bound");
+          check(canonical_dense.bytes != NULL &&
+                    strstr(canonical_dense.bytes,
+                           "reject\tchk_beta\tedge_min_src\t-170141183460469231731687303715884105728\n") != NULL,
+                "shuffle canonical dense reject i128 min bound");
+          check(canonical_dense.bytes != NULL &&
+                    strstr(canonical_dense.bytes, "reject\tchk_alpha\t") == NULL &&
+                    strstr(canonical_dense.bytes, "reject\tchk_delta\t") == NULL,
+                "shuffle canonical dense satisfied belowOwed not rejected");
+          check(canonical_dense.bytes != NULL &&
+                    strstr(canonical_dense.bytes, "reuseLaterAlloc\tslot_beta\tpt_gamma\n") != NULL &&
+                    strstr(canonical_dense.bytes, "reuseAt\tslot_alpha\tpt_gamma\n") != NULL &&
+                    strstr(canonical_dense.bytes, "reuseAt\tslot_beta\tpt_gamma\n") == NULL,
+                "shuffle canonical dense concurrent alloc tie-break");
+          check(canonical_dense.bytes != NULL &&
+                    strstr(canonical_dense.bytes, "reuseAt\tslot_alpha\tpt_delta\n") == NULL &&
+                    strstr(canonical_dense.bytes, "reuseAt\tslot_gamma\tpt_delta\n") != NULL,
+                "shuffle canonical dense reuseEarlier blocks slot_alpha not slot_gamma");
+          check(canonical_dense.bytes != NULL &&
+                    strstr(canonical_dense.bytes, "reject\tmissing_reuse\tslot_zeta\t") != NULL,
+                "shuffle canonical dense missing_reuse reject");
+        } else {
+          int same_dense = dense_snap.len == canonical_dense.len &&
+                           memcmp(dense_snap.bytes, canonical_dense.bytes, canonical_dense.len) == 0;
+          check(same_dense, "shuffle dense snapshot matches canonical");
+          free(dense_snap.bytes);
+        }
+
+        if (!has_sparse) {
+          canonical_sparse = sparse_snap;
+          has_sparse = 1;
+          check(canonical_sparse.bytes != NULL &&
+                    strstr(canonical_sparse.bytes, "reject\tchk_beta\tpt_alpha\t10\n") != NULL &&
+                    strstr(canonical_sparse.bytes, "reject\tchk_alpha\t") == NULL,
+                "shuffle canonical sparse reject exactness");
+        } else {
+          int same_sparse = sparse_snap.len == canonical_sparse.len &&
+                            memcmp(sparse_snap.bytes, canonical_sparse.bytes, canonical_sparse.len) == 0;
+          check(same_sparse, "shuffle sparse snapshot matches canonical");
+          free(sparse_snap.bytes);
+        }
+      }
+      tupu_close(session);
+    }
+  }
+
+  free(canonical_dense.bytes);
+  free(canonical_sparse.bytes);
+  free(prog_buf);
+}
+
 int main(void) {
   test_1000_frames();
   test_budget_exceeded();
@@ -672,6 +1188,7 @@ int main(void) {
   test_eval_requires_reset();
   test_delta_not_displaced_and_empty_skip();
   test_replay_checks_all_idb_and_round_order();
+  test_shuffle_golden_order_independence();
   printf("api_test failures=%d\n", fails);
   return fails == 0 ? 0 : 1;
 }
