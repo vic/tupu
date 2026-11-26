@@ -1,6 +1,7 @@
 /* In-process C library API implementation (include/tupu.h). */
 #include "../include/tupu.h"
 #include "engine.h"
+#include "num.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -227,3 +228,12 @@ int tupu_rel_read_row_i128(const TupuSession *s, int rel_id, uint32_t row, TupuI
   }
   return 0;
 }
+
+int tupu_i128_parse(const char *text, size_t length, TupuI128 *out) {
+  I128 v;
+  if (text == NULL || out == NULL || !num_parse(text, length, &v)) return -1;
+  *out = tupu_from_i128(v);
+  return 0;
+}
+
+size_t tupu_i128_format(TupuI128 value, char *text) { return num_format(i128_from_tupu(value), text); }

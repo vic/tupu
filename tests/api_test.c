@@ -279,6 +279,28 @@ static void test_column_kinds(void) {
   tupu_close(s);
 }
 
+static void test_i128_text(void) {
+  char text[TUPU_I128_TEXT_MAX];
+  TupuI128 v;
+  size_t n;
+  check(tupu_i128_parse("170141183460469231731687303715884105727", 39, &v) == 0 && v.hi == INT64_MAX && v.lo == UINT64_MAX, "i128 parse max");
+  check(tupu_i128_parse("-170141183460469231731687303715884105728", 40, &v) == 0 && v.hi == INT64_MIN && v.lo == 0, "i128 parse min");
+  check(tupu_i128_parse("18446744073709551615", 20, &v) == 0 && v.hi == 0 && v.lo == UINT64_MAX, "i128 parse u64 max");
+  check(tupu_i128_parse("18446744073709551616", 20, &v) == 0 && v.hi == 1 && v.lo == 0, "i128 parse 2^64");
+  check(tupu_i128_parse("170141183460469231731687303715884105728", 39, &v) == -1 && tupu_i128_parse("-170141183460469231731687303715884105729", 40, &v) == -1 && tupu_i128_parse("", 0, &v) == -1 && tupu_i128_parse("-", 1, &v) == -1 && tupu_i128_parse("1x", 2, &v) == -1 && tupu_i128_parse("+5", 2, &v) == -1 && tupu_i128_parse(NULL, 1, &v) == -1 && tupu_i128_parse("5", 1, NULL) == -1, "i128 parse rejects");
+  check(tupu_i128_parse("123", 2, &v) == 0 && v.hi == 0 && v.lo == 12, "i128 parse length bounds");
+  n = tupu_i128_format((TupuI128){UINT64_MAX, INT64_MAX}, text);
+  check(n == 39 && memcmp(text, "170141183460469231731687303715884105727", 39) == 0, "i128 format max");
+  n = tupu_i128_format((TupuI128){0, INT64_MIN}, text);
+  check(n == 40 && memcmp(text, "-170141183460469231731687303715884105728", 40) == 0, "i128 format min");
+  n = tupu_i128_format((TupuI128){0, 1}, text);
+  check(n == 20 && memcmp(text, "18446744073709551616", 20) == 0, "i128 format 2^64");
+  n = tupu_i128_format((TupuI128){0, 0}, text);
+  int zero_ok = n == 1 && text[0] == '0';
+  n = tupu_i128_format((TupuI128){UINT64_MAX, -1}, text);
+  check(zero_ok && n == 2 && memcmp(text, "-1", 2) == 0, "i128 format zero and minus one");
+}
+
 int main(void) {
   test_1000_frames();
   test_budget_exceeded();
@@ -286,6 +308,7 @@ int main(void) {
   test_threads_equal();
   test_i128_and_replay();
   test_column_kinds();
+  test_i128_text();
   printf("api_test failures=%d\n", fails);
   return fails == 0 ? 0 : 1;
 }

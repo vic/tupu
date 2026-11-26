@@ -90,6 +90,14 @@ uint32_t tupu_rel_count(const TupuSession *s, int rel_id);
 int tupu_rel_read_row(const TupuSession *s, int rel_id, uint32_t row, int64_t *out_vals, int ncols);
 int tupu_rel_read_row_i128(const TupuSession *s, int rel_id, uint32_t row, TupuI128 *out_vals, int ncols);
 
+/* Decimal text of an exact 128-bit number: an optional '-' then one or more digits (leading zeros allowed), the whole of text[0..length). */
+/* tupu_i128_parse returns 0 and sets *out; -1 when malformed, outside the signed 128-bit range, or text or out is NULL. */
+int tupu_i128_parse(const char *text, size_t length, TupuI128 *out);
+/* Room tupu_i128_format needs: '-' and 39 digits. */
+enum { TUPU_I128_TEXT_MAX = 40 };
+/* Writes the canonical decimal text of value into text (room TUPU_I128_TEXT_MAX, no terminator); returns its length. */
+size_t tupu_i128_format(TupuI128 value, char *text);
+
 #ifdef __cplusplus
 }
 #endif
