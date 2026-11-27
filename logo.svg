@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 140" width="420" height="140" role="img" aria-label="tupu logo">
+  <defs>
+    <linearGradient id="tupu-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="50%" stop-color="#818CF8"/>
+      <stop offset="100%" stop-color="#C026D3"/>
+    </linearGradient>
+    <linearGradient id="tupu-grad-soft" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#7DD3FC"/>
+      <stop offset="100%" stop-color="#A855F7"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Pure white background -->
+  <rect width="420" height="140" rx="16" fill="#FFFFFF"/>
+
+  <!-- Geometric Datalog / Quipu-knot lattice mark -->
+  <g transform="translate(28, 22)">
+    <!-- Subtle outer frame -->
+    <rect x="0" y="0" width="96" height="96" rx="20" fill="none" stroke="url(#tupu-grad)" stroke-width="3"/>
+
+    <!-- Graph / fixed-point derivation edges -->
+    <path d="M 26 30 L 48 68 L 70 30" fill="none" stroke="url(#tupu-grad-soft)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 26 30 L 70 30" fill="none" stroke="url(#tupu-grad)" stroke-width="4" stroke-linecap="round"/>
+    <path d="M 48 20 L 48 76" fill="none" stroke="url(#tupu-grad)" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- Fact / knot nodes -->
+    <circle cx="26" cy="30" r="6.5" fill="#38BDF8"/>
+    <circle cx="70" cy="30" r="6.5" fill="#A855F7"/>
+    <circle cx="48" cy="20" r="5" fill="#60A5FA"/>
+    <circle cx="48" cy="68" r="7" fill="#C026D3"/>
+    <circle cx="48" cy="68" r="2.8" fill="#FFFFFF"/>
+  </g>
+
+  <!-- Wordmark in black Victor Mono -->
+  <text x="148" y="88"
+        font-family="'Victor Mono', 'VictorMono Nerd Font', monospace"
+        font-size="60"
+        font-weight="700"
+        letter-spacing="-1"
+        fill="#000000">tupu</text>
+</svg>

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.svg" alt="tupu logo" width="420">
+</p>
+
 # tupu
 
 tupu is a Datalog engine written in C. You give it a Datalog program and some facts, and it tells you everything that follows from them. It reads the same kind of programs Soufflé reads (a subset, see below), so if you already have Soufflé rules you can usually run them as they are.
