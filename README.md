@@ -6,7 +6,7 @@
 
 tupu is a Datalog engine written in C. You give it a Datalog program and some facts, and it tells you everything that follows from them. It reads the same kind of programs Soufflé reads (a subset, see below), so if you already have Soufflé rules you can usually run them as they are.
 
-We built it because we needed a Datalog that is faster and lighter on memory than the engines we tried, and because we wanted answers we can trust byte for byte.
+We built it because at [Stigi](https://stigi.org) we needed a Datalog that is faster and lighter on memory than the engines we tried, and because we wanted answers we can trust byte for byte.
 
 ## What you get
 
